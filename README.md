@@ -13,6 +13,17 @@ to build run
 cd csse4011-argus-violet
 west build -b esp32s3_devkitc app -d app/build
 ```
+if experiencing a 
+```
+zephyr_install/zephyr-sdk-0.17.0/xtensa-espressif_esp32_zephyr-elf/bin/xtensa-espressif_esp32_zephyr-elf-gcc
+not found - Please check your toolchain installation
+```
+error, run 
+```
+cd zephyr_install/zephyr-sdk-0.17.0 
+./setup.sh
+
+```
 
 ```
 west flash -d app/build
