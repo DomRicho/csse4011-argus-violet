@@ -5,7 +5,7 @@ import argparse
 
 def main():
     parser = argparse.ArgumentParser(description='ESP32-CAM Serial Monitor')
-    parser.add_argument('--port', default='/dev/tty.usbserial-A5069RR4', help='Serial port')
+    parser.add_argument('--port', default='/dev/tty.usbmodem11101', help='Serial port')
     parser.add_argument('--baud', type=int, default=115200, help='Baud rate')
     args = parser.parse_args()
 
