@@ -5,8 +5,15 @@
 #include <zephyr/drivers/video.h>
 #include <zephyr/drivers/video-controls.h>
 
+#include <zephyr/net/wifi_mgmt.h>
+#include <zephyr/net/net_event.h>
+#include <zephyr/net/net_if.h>
+#include <zephyr/net/net_ip.h>
+#include <zephyr/net/socket.h>
+
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(main);
+
+#include "app/my_network.h" // For wifi credentials
 
 #define LOG_LEVEL LOG_LEVEL_DBG
 
@@ -14,9 +21,29 @@ LOG_MODULE_REGISTER(main);
 #define FRAME_WIDTH 240
 #define PIXEL_FORMAT VIDEO_PIX_FMT_RGB565
 
+// #define FRAME_HEIGHT 240
+// #define FRAME_WIDTH 320
 // #define FRAME_WIDTH 1600
 // #define FRAME_HEIGHT 1200
 // #define PIXEL_FORMAT VIDEO_PIX_FMT_JPEG 
+
+LOG_MODULE_REGISTER(main);
+
+static struct net_mgmt_event_callback wifi_cb;
+static bool wifi_connected = false;
+
+static ssize_t sendall(int sock, const void *buf, size_t len)
+{
+    while (len) {
+        ssize_t out_len = zsock_send(sock, buf, len, 0);
+        if (out_len < 0) {
+            return out_len;
+        }
+        buf = (const char *)buf + out_len;
+        len -= out_len;
+    }
+    return 0;
+}
 
 static inline int display_setup(const struct device *const display_dev, const uint32_t pixfmt)
 {
@@ -72,11 +99,50 @@ static inline void video_display_frame(const struct device *const display_dev,
     display_write(display_dev, 0, vbuf->line_offset, &buf_desc, vbuf->buffer);
 }
 
+
+static void wifi_connect_handler(struct net_mgmt_event_callback *cb,
+    uint32_t mgmt_event, struct net_if *iface)
+{
+    if (mgmt_event == NET_EVENT_WIFI_CONNECT_RESULT) {
+        struct wifi_status *status = (struct wifi_status *)cb->info;
+        if (status && status->status == 0) {
+            wifi_connected = true;
+            LOG_INF("Wi-Fi connected");
+        } else {
+            LOG_ERR("Wi-Fi connection failed\n");
+        }
+    } else if (mgmt_event == NET_EVENT_WIFI_DISCONNECT_RESULT) {
+        wifi_connected = false;
+        LOG_WRN("Wi-Fi disconnected");
+    }
+}
+
+static void wifi_connect(void)
+{
+    LOG_INF("Connecting to Wi-Fi...");
+    struct net_if *iface = net_if_get_default();
+    struct wifi_connect_req_params params = {
+        .ssid = WIFI_SSID,
+        .ssid_length = strlen(WIFI_SSID),
+        .psk = WIFI_PASS,
+        .psk_length = strlen(WIFI_PASS),
+        .security = WIFI_SECURITY_TYPE_PSK,
+        .channel = WIFI_CHANNEL_ANY,
+        .timeout = SYS_FOREVER_MS,
+    };
+    
+    net_mgmt_init_event_callback(&wifi_cb, wifi_connect_handler,
+        NET_EVENT_WIFI_CONNECT_RESULT | NET_EVENT_WIFI_DISCONNECT_RESULT);
+    net_mgmt_add_event_callback(&wifi_cb);
+
+    int ret = net_mgmt(NET_REQUEST_WIFI_CONNECT, iface, &params, sizeof(params));
+    if (ret) {
+        printk("Wi-Fi connect request failed: %d\n", ret);
+    }
+}
+
 int main(void)
 {
-    // Wait for 10 seconds to allow time to connect to screen
-    k_sleep(K_SECONDS(5));
-
     struct video_buffer *buffers[CONFIG_VIDEO_BUFFER_POOL_NUM_MAX], *vbuf;
 	struct video_format fmt;
 	struct video_caps caps;
@@ -88,13 +154,73 @@ int main(void)
 	int i = 0;
 	int err;
 
-    const struct device *const video_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
+    // Wait for 3 seconds to allow time to connect to screen
+    // k_sleep(K_SECONDS(3));
 
+    // Connect to Wi-Fi
+    wifi_connect();
+    while (!wifi_connected) {
+        k_sleep(K_SECONDS(1));
+    }
+
+    struct net_if *iface = net_if_get_default();
+    while (!net_if_is_up(iface)) {
+        k_sleep(K_MSEC(100));
+    }
+
+    // Open TCP socket
+    int sock = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) {
+        LOG_ERR("Failed to create socket");
+        return 0;
+    }
+
+    // Create socket
+    int listen_sock = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_sock < 0) {
+        LOG_ERR("Failed to create listening socket");
+        return 0;
+    }
+
+    // Set socket options
+    struct sockaddr_in bind_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(SERVER_PORT),
+        .sin_addr.s_addr = INADDR_ANY
+    };
+
+    // Bind the socket to the address and port
+    if (zsock_bind(listen_sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
+        LOG_ERR("Bind failed");
+        zsock_close(listen_sock);
+        return 0;
+    }
+
+    // Set the socket to listen for incoming connections
+    if (zsock_listen(listen_sock, 1) < 0) {
+        LOG_ERR("Listen failed");
+        zsock_close(listen_sock);
+        return 0;
+    }
+    LOG_INF("Server listening on port %d", SERVER_PORT);
+
+    // Wait to accept connection from client
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
+    int client_sock = zsock_accept(listen_sock, (struct sockaddr *)&client_addr, &client_addr_len);
+    if (client_sock < 0) {
+        LOG_ERR("Accept failed");
+        zsock_close(listen_sock);
+        return 0;
+    }
+    LOG_INF("Client connected!");
+
+    // Initialize video device
+    const struct device *const video_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
 	if (!device_is_ready(video_dev)) {
 		LOG_ERR("%s: video device is not ready", video_dev->name);
 		return 0;
 	}
-
     LOG_INF("Video device: %s", video_dev->name);
 
     caps.type = type;
@@ -102,8 +228,6 @@ int main(void)
 		LOG_ERR("Unable to retrieve video capabilities");
 		return 0;
 	}
-    
-    /* Get default/native format */
 	fmt.type = type;
 	if (video_get_format(video_dev, &fmt)) {
 		LOG_ERR("Unable to retrieve video format");
@@ -118,13 +242,14 @@ int main(void)
         LOG_ERR("Unable to set format");
         return 0;
     }
+    LOG_INF("Camera format: width=%d height=%d pitch=%d pixelformat=0x%x",
+        fmt.width, fmt.height, fmt.pitch, fmt.pixelformat);
 
     if (!video_get_frmival(video_dev, &frmival)) {
         LOG_INF("- Default frame rate : %f fps",
             1.0 * frmival.denominator / frmival.numerator);
     }
 
-    /* Set controls */
 	struct video_control ctrl = {.id = VIDEO_CID_VFLIP, .val = 1};
 
 	if (video_set_ctrl(video_dev, &ctrl)) {
@@ -132,6 +257,7 @@ int main(void)
         return 0;
     }
 
+    //// Initialize display device
     // const struct device *const display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
 
 	// if (!device_is_ready(display_dev)) {
@@ -151,6 +277,7 @@ int main(void)
 	} else {
 		bsize = fmt.pitch * caps.min_line_count;
 	}
+    // bsize = 40 * 1024; // 40KB is usually enough for 320x240 JPEG, increase if needed
 
     /* Alloc video buffers and enqueue for capture */
 	for (i = 0; i < ARRAY_SIZE(buffers); i++) {
@@ -183,14 +310,24 @@ int main(void)
 			return 0;
 		}
 
-		LOG_DBG("Got frame %u! size: %u; timestamp %u ms", frame++, vbuf->bytesused,
-			vbuf->timestamp);
+        // LOG_INF("Sending frame: %d bytes, line_offset: %d", vbuf->bytesused, vbuf->line_offset);
+        // Send the image data
+        err = sendall(client_sock, vbuf->buffer, vbuf->bytesused);
+        if (err < 0) {
+            LOG_ERR("Failed to send frame to client");
+            break;
+        }
 
+        // Display the frame on the screen
         // video_display_frame(display_dev, vbuf, fmt);
+
         err = video_enqueue(video_dev, vbuf);
 		if (err) {
 			LOG_ERR("Unable to requeue video buf");
 			return 0;
 		}
 	}
+    zsock_close(client_sock);
+    zsock_close(listen_sock);
+    return 0;
 }
