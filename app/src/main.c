@@ -13,24 +13,32 @@
 
 #include <zephyr/logging/log.h>
 
+#include "app/app.h"
 #include "app/my_network.h" // For wifi credentials
-
-#define LOG_LEVEL LOG_LEVEL_DBG
 
 #define FRAME_HEIGHT 240
 #define FRAME_WIDTH 240
 #define PIXEL_FORMAT VIDEO_PIX_FMT_RGB565
+#define FRAME_BUF_SIZE (FRAME_WIDTH * FRAME_HEIGHT * 2)
 
-// #define FRAME_HEIGHT 240
-// #define FRAME_WIDTH 320
-// #define FRAME_WIDTH 1600
-// #define FRAME_HEIGHT 1200
-// #define PIXEL_FORMAT VIDEO_PIX_FMT_JPEG 
-
+#define LOG_LEVEL LOG_LEVEL_DBG
 LOG_MODULE_REGISTER(main);
+
+#define CAMERA_STACK_SIZE 4096
+#define NETWORK_STACK_SIZE 4096
+#define CAMERA_PRIORITY 5
+#define NETWORK_PRIORITY 5
+K_THREAD_DEFINE(camera_tid, CAMERA_STACK_SIZE, camera_thread, NULL, NULL, NULL, CAMERA_PRIORITY, 0, 0);
+
+struct k_sem frame_sem;
+K_SEM_DEFINE(frame_sem, 1, 1);
 
 static struct net_mgmt_event_callback wifi_cb;
 static bool wifi_connected = false;
+
+// Store the frame buffer in external RAM
+__attribute__((section(".ext_ram.bss")))
+static uint8_t frame_buf[FRAME_BUF_SIZE];
 
 static void wifi_connect(void);
 
@@ -145,9 +153,7 @@ static void wifi_connect(void)
     }
 }
 
-int main(void)
-{
-    printk("Starting argus-violet...\n");
+void camera_thread(void) {
     struct video_buffer *buffers[CONFIG_VIDEO_BUFFER_POOL_NUM_MAX], *vbuf;
 	struct video_format fmt;
 	struct video_caps caps;
@@ -157,6 +163,111 @@ int main(void)
 	unsigned int frame = 0;
 	size_t bsize;
 	int i = 0;
+	int err;
+
+    // Initialize video device
+    const struct device *const video_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
+	if (!device_is_ready(video_dev)) {
+		LOG_ERR("%s: video device is not ready", video_dev->name);
+		return;
+	}
+    LOG_INF("Video device: %s", video_dev->name);
+
+    caps.type = type;
+	if (video_get_caps(video_dev, &caps)) {
+		LOG_ERR("Unable to retrieve video capabilities");
+		return;
+	}
+	fmt.type = type;
+	if (video_get_format(video_dev, &fmt)) {
+		LOG_ERR("Unable to retrieve video format");
+		return;
+	}
+	fmt.height = FRAME_HEIGHT;
+	fmt.width = FRAME_WIDTH;
+	fmt.pitch = fmt.width * 2;
+    fmt.pixelformat = PIXEL_FORMAT;
+
+    if (video_set_format(video_dev, &fmt)) {
+        LOG_ERR("Unable to set format");
+        return;
+    }
+    LOG_INF("Camera format: width=%d height=%d pitch=%d pixelformat=0x%x",
+        fmt.width, fmt.height, fmt.pitch, fmt.pixelformat);
+
+    if (!video_get_frmival(video_dev, &frmival)) {
+        LOG_INF("- Default frame rate : %f fps",
+            1.0 * frmival.denominator / frmival.numerator);
+    }
+
+	struct video_control ctrl = {.id = VIDEO_CID_VFLIP, .val = 1};
+
+	if (video_set_ctrl(video_dev, &ctrl)) {
+        LOG_ERR("Unable to set control");
+        return;
+    }
+
+    //// Initialize display device
+    // const struct device *const display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+
+	// if (!device_is_ready(display_dev)) {
+	// 	LOG_ERR("%s: display device not ready.", display_dev->name);
+	// 	return 0;
+	// }
+
+	// err = display_setup(display_dev, fmt.pixelformat);
+	// if (err) {
+	// 	LOG_ERR("Unable to set up display");
+	// 	return err;
+	// }
+
+    /* Size to allocate for each buffer */
+	if (caps.min_line_count == LINE_COUNT_HEIGHT) {
+		bsize = fmt.pitch * fmt.height;
+	} else {
+		bsize = fmt.pitch * caps.min_line_count;
+	}
+    // bsize = 40 * 1024; // 40KB is usually enough for 320x240 JPEG, increase if needed
+
+    /* Alloc video buffers and enqueue for capture */
+	for (i = 0; i < ARRAY_SIZE(buffers); i++) {
+		/*
+		* For some hardwares, such as the PxP used on i.MX RT1170 to do image rotation,
+		* buffer alignment is needed in order to achieve the best performance
+		*/
+		buffers[i] = video_buffer_aligned_alloc(bsize, CONFIG_VIDEO_BUFFER_POOL_ALIGN,
+							K_FOREVER);
+		if (buffers[i] == NULL) {
+			LOG_ERR("Unable to alloc video buffer");
+			return;
+		}
+		buffers[i]->type = type;
+		video_enqueue(video_dev, buffers[i]);
+	}
+
+    /* Start video capture */
+	if (video_stream_start(video_dev, type)) {
+		LOG_ERR("Unable to start capture (interface)");
+		return;
+	}
+
+	LOG_INF("Capture started");
+
+    while (1) {
+        if (video_dequeue(video_dev, &vbuf, K_FOREVER) == 0) {
+            // Only update buffer if networking thread is done
+            if (k_sem_take(&frame_sem, K_NO_WAIT) == 0) {
+                memcpy(frame_buf, vbuf->buffer, FRAME_BUF_SIZE);
+                k_sem_give(&frame_sem); // Mark as "new frame ready"
+            }
+            video_enqueue(video_dev, vbuf);
+        }
+    }
+}
+
+int main(void)
+{
+    printk("Starting argus-violet...\n");
 	int err;
 
     // Wait for 3 seconds to allow time to connect to screen
@@ -230,117 +341,23 @@ int main(void)
     }
     LOG_INF("Client connected!");
 
-    // Initialize video device
-    const struct device *const video_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
-	if (!device_is_ready(video_dev)) {
-		LOG_ERR("%s: video device is not ready", video_dev->name);
-		return 0;
-	}
-    LOG_INF("Video device: %s", video_dev->name);
-
-    caps.type = type;
-	if (video_get_caps(video_dev, &caps)) {
-		LOG_ERR("Unable to retrieve video capabilities");
-		return 0;
-	}
-	fmt.type = type;
-	if (video_get_format(video_dev, &fmt)) {
-		LOG_ERR("Unable to retrieve video format");
-		return 0;
-	}
-	fmt.height = FRAME_HEIGHT;
-	fmt.width = FRAME_WIDTH;
-	fmt.pitch = fmt.width * 2;
-    fmt.pixelformat = PIXEL_FORMAT;
-
-    if (video_set_format(video_dev, &fmt)) {
-        LOG_ERR("Unable to set format");
-        return 0;
-    }
-    LOG_INF("Camera format: width=%d height=%d pitch=%d pixelformat=0x%x",
-        fmt.width, fmt.height, fmt.pitch, fmt.pixelformat);
-
-    if (!video_get_frmival(video_dev, &frmival)) {
-        LOG_INF("- Default frame rate : %f fps",
-            1.0 * frmival.denominator / frmival.numerator);
-    }
-
-	struct video_control ctrl = {.id = VIDEO_CID_VFLIP, .val = 1};
-
-	if (video_set_ctrl(video_dev, &ctrl)) {
-        LOG_ERR("Unable to set control");
-        return 0;
-    }
-
-    //// Initialize display device
-    // const struct device *const display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
-
-	// if (!device_is_ready(display_dev)) {
-	// 	LOG_ERR("%s: display device not ready.", display_dev->name);
-	// 	return 0;
-	// }
-
-	// err = display_setup(display_dev, fmt.pixelformat);
-	// if (err) {
-	// 	LOG_ERR("Unable to set up display");
-	// 	return err;
-	// }
-
-    /* Size to allocate for each buffer */
-	if (caps.min_line_count == LINE_COUNT_HEIGHT) {
-		bsize = fmt.pitch * fmt.height;
-	} else {
-		bsize = fmt.pitch * caps.min_line_count;
-	}
-    // bsize = 40 * 1024; // 40KB is usually enough for 320x240 JPEG, increase if needed
-
-    /* Alloc video buffers and enqueue for capture */
-	for (i = 0; i < ARRAY_SIZE(buffers); i++) {
-		/*
-		* For some hardwares, such as the PxP used on i.MX RT1170 to do image rotation,
-		* buffer alignment is needed in order to achieve the best performance
-		*/
-		buffers[i] = video_buffer_aligned_alloc(bsize, CONFIG_VIDEO_BUFFER_POOL_ALIGN,
-							K_FOREVER);
-		if (buffers[i] == NULL) {
-			LOG_ERR("Unable to alloc video buffer");
-			return 0;
-		}
-		buffers[i]->type = type;
-		video_enqueue(video_dev, buffers[i]);
-	}
-
-    /* Start video capture */
-	if (video_stream_start(video_dev, type)) {
-		LOG_ERR("Unable to start capture (interface)");
-		return 0;
-	}
-
-	LOG_INF("Capture started");
 
     while (1) {
-		err = video_dequeue(video_dev, &vbuf, K_FOREVER);
-		if (err) {
-			LOG_ERR("Unable to dequeue video buf");
-			return 0;
-		}
 
         // LOG_INF("Sending frame: %d bytes, line_offset: %d", vbuf->bytesused, vbuf->line_offset);
-        // Send the image data
-        err = sendall(client_sock, vbuf->buffer, vbuf->bytesused);
+
+        // Wait for a new frame to be ready
+        k_sem_take(&frame_sem, K_FOREVER);
+        // Send the latest frame
+        int err = sendall(client_sock, frame_buf, FRAME_BUF_SIZE);
+        k_sem_give(&frame_sem); // Mark buffer as available for camera thread
         if (err < 0) {
             LOG_ERR("Failed to send frame to client");
-            break;
+            // handle error or break
         }
 
         // Display the frame on the screen
         // video_display_frame(display_dev, vbuf, fmt);
-
-        err = video_enqueue(video_dev, vbuf);
-		if (err) {
-			LOG_ERR("Unable to requeue video buf");
-			return 0;
-		}
 	}
     zsock_close(client_sock);
     zsock_close(listen_sock);

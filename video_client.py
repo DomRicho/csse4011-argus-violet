@@ -48,6 +48,7 @@ class VideoClientGUI:
                     while len(data) < BYTES_PER_FRAME:
                         packet = s.recv(BYTES_PER_FRAME - len(data))
                         if not packet:
+                            print("Connection closed by server")
                             self.running = False
                             return
                         data += packet
