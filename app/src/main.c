@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 
@@ -29,9 +30,11 @@ LOG_MODULE_REGISTER(main);
 #define CAMERA_PRIORITY 5
 #define NETWORK_PRIORITY 5
 K_THREAD_DEFINE(camera_tid, CAMERA_STACK_SIZE, camera_thread, NULL, NULL, NULL, CAMERA_PRIORITY, 0, 0);
+K_THREAD_DEFINE(network_tid, NETWORK_STACK_SIZE, network_thread, NULL, NULL, NULL, NETWORK_PRIORITY, 0, 0);
 
-struct k_sem frame_sem;
-K_SEM_DEFINE(frame_sem, 1, 1);
+struct k_sem sem_frame_ready, sem_frame_taken;
+K_SEM_DEFINE(sem_frame_ready, 0, 1); // Camera gives, network takes
+K_SEM_DEFINE(sem_frame_taken, 1, 1); // Network gives, camera takes
 
 static struct net_mgmt_event_callback wifi_cb;
 static bool wifi_connected = false;
@@ -53,6 +56,20 @@ static ssize_t sendall(int sock, const void *buf, size_t len)
         len -= out_len;
     }
     return 0;
+}
+
+static ssize_t send_frame_with_header(int sock, const void *buf, size_t len)
+{
+    // Send magic header
+    const char header[4] = {'F', 'R', 'A', 'M'};
+    if (sendall(sock, header, 4) < 0) return -1;
+
+    // Send frame length (little-endian uint32)
+    uint32_t frame_len = (uint32_t)len;
+    if (sendall(sock, &frame_len, 4) < 0) return -1;
+
+    // Send frame data
+    return sendall(sock, buf, len);
 }
 
 static inline int display_setup(const struct device *const display_dev, const uint32_t pixfmt)
@@ -158,12 +175,10 @@ void camera_thread(void) {
 	struct video_format fmt;
 	struct video_caps caps;
 	struct video_frmival frmival;
-	struct video_frmival_enum fie;
 	enum video_buf_type type = VIDEO_BUF_TYPE_OUTPUT;
-	unsigned int frame = 0;
 	size_t bsize;
 	int i = 0;
-	int err;
+    int err;
 
     // Initialize video device
     const struct device *const video_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
@@ -192,8 +207,7 @@ void camera_thread(void) {
         LOG_ERR("Unable to set format");
         return;
     }
-    LOG_INF("Camera format: width=%d height=%d pitch=%d pixelformat=0x%x",
-        fmt.width, fmt.height, fmt.pitch, fmt.pixelformat);
+    
 
     if (!video_get_frmival(video_dev, &frmival)) {
         LOG_INF("- Default frame rate : %f fps",
@@ -201,7 +215,6 @@ void camera_thread(void) {
     }
 
 	struct video_control ctrl = {.id = VIDEO_CID_VFLIP, .val = 1};
-
 	if (video_set_ctrl(video_dev, &ctrl)) {
         LOG_ERR("Unable to set control");
         return;
@@ -212,13 +225,13 @@ void camera_thread(void) {
 
 	// if (!device_is_ready(display_dev)) {
 	// 	LOG_ERR("%s: display device not ready.", display_dev->name);
-	// 	return 0;
+	// 	return;
 	// }
 
 	// err = display_setup(display_dev, fmt.pixelformat);
 	// if (err) {
 	// 	LOG_ERR("Unable to set up display");
-	// 	return err;
+	// 	return;
 	// }
 
     /* Size to allocate for each buffer */
@@ -228,6 +241,9 @@ void camera_thread(void) {
 		bsize = fmt.pitch * caps.min_line_count;
 	}
     // bsize = 40 * 1024; // 40KB is usually enough for 320x240 JPEG, increase if needed
+
+    LOG_INF("Camera format: width=%d height=%d pitch=%d pixelformat=0x%x",
+        fmt.width, fmt.height, fmt.pitch, fmt.pixelformat);
 
     /* Alloc video buffers and enqueue for capture */
 	for (i = 0; i < ARRAY_SIZE(buffers); i++) {
@@ -255,24 +271,34 @@ void camera_thread(void) {
 
     while (1) {
         if (video_dequeue(video_dev, &vbuf, K_FOREVER) == 0) {
-            // Only update buffer if networking thread is done
-            if (k_sem_take(&frame_sem, K_NO_WAIT) == 0) {
+            // Only update buffer if network is done with it
+            if (k_sem_take(&sem_frame_taken, K_NO_WAIT) == 0) {
+                if (vbuf->bytesused != FRAME_BUF_SIZE) {
+                    LOG_ERR("Frame size mismatch: %zu", vbuf->bytesused);
+                }
+                // video_display_frame(display_dev, vbuf, fmt);
+                memset(frame_buf, 0, FRAME_BUF_SIZE); 
                 memcpy(frame_buf, vbuf->buffer, FRAME_BUF_SIZE);
-                k_sem_give(&frame_sem); // Mark as "new frame ready"
+                k_sem_give(&sem_frame_ready); // Signal to network thread
             }
-            video_enqueue(video_dev, vbuf);
+            
         }
+        video_enqueue(video_dev, vbuf);
+        // err = video_dequeue(video_dev, &vbuf, K_FOREVER);
+		// if (err) {
+		// 	LOG_ERR("Unable to dequeue video buf");
+		// 	return 0;
+		// }
+        // video_display_frame(display_dev, vbuf, fmt);
+        // err = video_enqueue(video_dev, vbuf);
+		// if (err) {
+		// 	LOG_ERR("Unable to requeue video buf");
+		// 	return 0;
+		// }
     }
 }
 
-int main(void)
-{
-    printk("Starting argus-violet...\n");
-	int err;
-
-    // Wait for 3 seconds to allow time to connect to screen
-    // k_sleep(K_SECONDS(3));
-
+void network_thread(void) {
     // Connect to Wi-Fi
     wifi_connect();
     while (!wifi_connected) {
@@ -298,14 +324,14 @@ int main(void)
     int sock = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock < 0) {
         LOG_ERR("Failed to create socket");
-        return 0;
+        return;
     }
 
     // Create socket
     int listen_sock = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_sock < 0) {
         LOG_ERR("Failed to create listening socket");
-        return 0;
+        return;
     }
 
     // Set socket options
@@ -319,14 +345,14 @@ int main(void)
     if (zsock_bind(listen_sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
         LOG_ERR("Bind failed");
         zsock_close(listen_sock);
-        return 0;
+        return;
     }
 
     // Set the socket to listen for incoming connections
     if (zsock_listen(listen_sock, 1) < 0) {
         LOG_ERR("Listen failed");
         zsock_close(listen_sock);
-        return 0;
+        return;
     }
     LOG_INF("Server listening on port %d", SERVER_PORT);
 
@@ -337,29 +363,22 @@ int main(void)
     if (client_sock < 0) {
         LOG_ERR("Accept failed");
         zsock_close(listen_sock);
-        return 0;
+        return;
     }
     LOG_INF("Client connected!");
 
-
     while (1) {
-
-        // LOG_INF("Sending frame: %d bytes, line_offset: %d", vbuf->bytesused, vbuf->line_offset);
-
-        // Wait for a new frame to be ready
-        k_sem_take(&frame_sem, K_FOREVER);
-        // Send the latest frame
-        int err = sendall(client_sock, frame_buf, FRAME_BUF_SIZE);
-        k_sem_give(&frame_sem); // Mark buffer as available for camera thread
+        // LOG_DBG("Waiting for new frame...");
+        k_sem_take(&sem_frame_ready, K_FOREVER); // Wait for new frame
+        // LOG_DBG("Sending frame to client...");
+        int err = send_frame_with_header(client_sock, frame_buf, FRAME_BUF_SIZE);
+        k_sem_give(&sem_frame_taken); // Allow camera to update buffer again
         if (err < 0) {
             LOG_ERR("Failed to send frame to client");
-            // handle error or break
+            break;
         }
-
-        // Display the frame on the screen
-        // video_display_frame(display_dev, vbuf, fmt);
-	}
+    }
     zsock_close(client_sock);
     zsock_close(listen_sock);
-    return 0;
+    return;
 }
