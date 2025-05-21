@@ -32,6 +32,8 @@ LOG_MODULE_REGISTER(main);
 static struct net_mgmt_event_callback wifi_cb;
 static bool wifi_connected = false;
 
+static void wifi_connect(void);
+
 static ssize_t sendall(int sock, const void *buf, size_t len)
 {
     while (len) {
@@ -113,7 +115,9 @@ static void wifi_connect_handler(struct net_mgmt_event_callback *cb,
         }
     } else if (mgmt_event == NET_EVENT_WIFI_DISCONNECT_RESULT) {
         wifi_connected = false;
-        LOG_WRN("Wi-Fi disconnected");
+        LOG_WRN("Wi-Fi disconnected, attempting reconnect...");
+        k_sleep(K_SECONDS(2)); // Optional: avoid rapid retries
+        wifi_connect();
     }
 }
 
