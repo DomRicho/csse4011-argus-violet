@@ -143,6 +143,7 @@ static void wifi_connect(void)
 
 int main(void)
 {
+    printk("Starting argus-violet...\n");
     struct video_buffer *buffers[CONFIG_VIDEO_BUFFER_POOL_NUM_MAX], *vbuf;
 	struct video_format fmt;
 	struct video_caps caps;
@@ -164,6 +165,16 @@ int main(void)
     }
 
     struct net_if *iface = net_if_get_default();
+    struct in_addr addr, netmask, gw;
+
+    net_addr_pton(AF_INET, "192.168.1.50", &addr);
+    net_addr_pton(AF_INET, "255.255.255.0", &netmask);
+    net_addr_pton(AF_INET, "192.168.1.1", &gw);
+
+    net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0);
+    net_if_ipv4_set_netmask(iface, &netmask);
+    net_if_ipv4_set_gw(iface, &gw);
+    
     while (!net_if_is_up(iface)) {
         k_sleep(K_MSEC(100));
     }
