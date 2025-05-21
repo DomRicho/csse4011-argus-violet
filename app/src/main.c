@@ -174,7 +174,7 @@ int main(void)
     net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0);
     net_if_ipv4_set_netmask(iface, &netmask);
     net_if_ipv4_set_gw(iface, &gw);
-    
+
     while (!net_if_is_up(iface)) {
         k_sleep(K_MSEC(100));
     }
