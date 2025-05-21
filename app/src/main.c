@@ -174,7 +174,6 @@ void camera_thread(void) {
     struct video_buffer *buffers[CONFIG_VIDEO_BUFFER_POOL_NUM_MAX], *vbuf;
 	struct video_format fmt;
 	struct video_caps caps;
-	struct video_frmival frmival;
 	enum video_buf_type type = VIDEO_BUF_TYPE_OUTPUT;
 	size_t bsize;
 	int i = 0;
@@ -206,12 +205,6 @@ void camera_thread(void) {
     if (video_set_format(video_dev, &fmt)) {
         LOG_ERR("Unable to set format");
         return;
-    }
-    
-
-    if (!video_get_frmival(video_dev, &frmival)) {
-        LOG_INF("- Default frame rate : %f fps",
-            1.0 * frmival.denominator / frmival.numerator);
     }
 
 	struct video_control ctrl = {.id = VIDEO_CID_VFLIP, .val = 1};
@@ -281,7 +274,6 @@ void camera_thread(void) {
                 memcpy(frame_buf, vbuf->buffer, FRAME_BUF_SIZE);
                 k_sem_give(&sem_frame_ready); // Signal to network thread
             }
-            
         }
         video_enqueue(video_dev, vbuf);
         // err = video_dequeue(video_dev, &vbuf, K_FOREVER);
