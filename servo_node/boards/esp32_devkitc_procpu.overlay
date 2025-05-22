@@ -1,0 +1,41 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/ {
+	pan_servo: pan_servo {
+		compatible = "pwm-servo";
+		pwms = <&ledc0 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+		min-pulse = <PWM_USEC(700)>;
+		max-pulse = <PWM_USEC(2500)>;
+	};
+	tilt_servo: tilt_servo {
+		compatible = "pwm-servo";
+		pwms = <&ledc0 1 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+		min-pulse = <PWM_USEC(700)>;
+		max-pulse = <PWM_USEC(2500)>;
+	};
+};
+
+&pinctrl {
+    ledc0_default: ledc0_default {
+      group1 {
+        pinmux = <LEDC_CH0_GPIO18>,
+                 <LEDC_CH1_GPIO19>;
+        output-enable;
+      };
+    };
+};
+
+&ledc0 {
+    pinctrl-0 = <&ledc0_default>;
+    pinctrl-names = "default";
+    status = "okay";
+    #address-cells = <1>;
+    #size-cells = <0>;
+    channel0@0 {
+        reg = <0x0>;
+        timer = <0>;
+    };
+    channel1@1 {
+        reg = <0x1>;
+        timer = <1>;
+    };
+};
