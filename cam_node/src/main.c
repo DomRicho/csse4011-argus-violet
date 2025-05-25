@@ -14,8 +14,8 @@
 
 #include <zephyr/logging/log.h>
 
-#include "app/app.h"
-#include "app/my_network.h" // For wifi credentials
+#include "cam_node/cam_node.h"
+#include "cam_node/my_network.h" // For wifi credentials
 
 #define FRAME_HEIGHT 240
 #define FRAME_WIDTH 240
