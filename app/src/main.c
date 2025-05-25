@@ -27,8 +27,8 @@ LOG_MODULE_REGISTER(main);
 
 #define CAMERA_STACK_SIZE 4096
 #define NETWORK_STACK_SIZE 4096 * 3
-#define CAMERA_PRIORITY 2
-#define NETWORK_PRIORITY 5
+#define CAMERA_PRIORITY 3
+#define NETWORK_PRIORITY 6
 K_THREAD_DEFINE(camera_tid, CAMERA_STACK_SIZE, camera_thread, NULL, NULL, NULL, CAMERA_PRIORITY, 0, 0);
 K_THREAD_DEFINE(network_tid, NETWORK_STACK_SIZE, network_thread, NULL, NULL, NULL, NETWORK_PRIORITY, 0, 0);
 
@@ -141,7 +141,7 @@ static void wifi_connect_handler(struct net_mgmt_event_callback *cb,
     } else if (mgmt_event == NET_EVENT_WIFI_DISCONNECT_RESULT) {
         wifi_connected = false;
         LOG_WRN("Wi-Fi disconnected, attempting reconnect...");
-        k_sleep(K_SECONDS(2)); // Optional: avoid rapid retries
+        k_sleep(K_SECONDS(2)); 
         wifi_connect();
     } else {
         LOG_ERR("Unknown Wi-Fi event: %d", mgmt_event);
@@ -267,29 +267,12 @@ void camera_thread(void) {
                 if (vbuf->bytesused != FRAME_BUF_SIZE) {
                     LOG_ERR("Frame size mismatch: %zu", vbuf->bytesused);
                 }
-                // Print the address of the frame buffer
-                LOG_INF("Addr: %p, Size: %zu, Bytesused: %zu", (void*)vbuf->buffer, vbuf->size, vbuf->bytesused);
-
-                // video_display_frame(display_dev, vbuf, fmt);
-                // memset(frame_buf, 0, FRAME_BUF_SIZE); 
+                // LOG_DBG("Addr: %p, Size: %zu, Bytesused: %zu", (void*)vbuf->buffer, vbuf->size, vbuf->bytesused);
                 memcpy(frame_buf, vbuf->buffer, FRAME_BUF_SIZE);
-                // memset(vbuf->buffer, 0, FRAME_BUF_SIZE); 
                 k_sem_give(&sem_frame_ready); // Signal to network thread
             }
         }
         video_enqueue(video_dev, vbuf);
-
-        // err = video_dequeue(video_dev, &vbuf, K_FOREVER);
-		// if (err) {
-		// 	LOG_ERR("Unable to dequeue video buf");
-		// 	return 0;
-		// }
-        // video_display_frame(display_dev, vbuf, fmt);
-        // err = video_enqueue(video_dev, vbuf);
-		// if (err) {
-		// 	LOG_ERR("Unable to requeue video buf");
-		// 	return 0;
-		// }
     }
 }
 
@@ -383,7 +366,7 @@ void network_thread(void) {
 
     while (1) {
         // LOG_DBG("Waiting for new frame...");
-        k_sem_take(&sem_frame_ready, K_FOREVER); // Wait for new frame
+        k_sem_take(&sem_frame_ready, K_FOREVER); 
         // LOG_DBG("Sending frame to client...");
         
         int err = send_frame_with_header(client_sock, frame_buf, FRAME_BUF_SIZE);
