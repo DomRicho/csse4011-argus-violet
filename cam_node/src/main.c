@@ -26,9 +26,9 @@
 LOG_MODULE_REGISTER(cam_node);
 
 #define CAMERA_STACK_SIZE 4096
-#define NETWORK_STACK_SIZE 4096
-#define CAMERA_PRIORITY 5
-#define NETWORK_PRIORITY 5
+#define NETWORK_STACK_SIZE 4096 * 3
+#define CAMERA_PRIORITY 3
+#define NETWORK_PRIORITY 6
 K_THREAD_DEFINE(camera_tid, CAMERA_STACK_SIZE, camera_thread, NULL, NULL, NULL, CAMERA_PRIORITY, 0, 0);
 K_THREAD_DEFINE(network_tid, NETWORK_STACK_SIZE, network_thread, NULL, NULL, NULL, NETWORK_PRIORITY, 0, 0);
 
@@ -141,10 +141,12 @@ static void wifi_connect_handler(struct net_mgmt_event_callback *cb,
     } else if (mgmt_event == NET_EVENT_WIFI_DISCONNECT_RESULT) {
         wifi_connected = false;
         LOG_WRN("Wi-Fi disconnected, attempting reconnect...");
-        k_sleep(K_SECONDS(2)); // Optional: avoid rapid retries
+        k_sleep(K_SECONDS(2)); 
         wifi_connect();
+    } else {
+        LOG_ERR("Unknown Wi-Fi event: %d", mgmt_event);
     }
-}
+} 
 
 static void wifi_connect(void)
 {
@@ -213,32 +215,25 @@ void camera_thread(void) {
         return;
     }
 
-    //// Initialize display device
-    // const struct device *const display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+    // Initialize display device
+    const struct device *const display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
 
-	// if (!device_is_ready(display_dev)) {
-	// 	LOG_ERR("%s: display device not ready.", display_dev->name);
-	// 	return;
-	// }
-
-	// err = display_setup(display_dev, fmt.pixelformat);
-	// if (err) {
-	// 	LOG_ERR("Unable to set up display");
-	// 	return;
-	// }
-
-    /* Size to allocate for each buffer */
-	if (caps.min_line_count == LINE_COUNT_HEIGHT) {
-		bsize = fmt.pitch * fmt.height;
-	} else {
-		bsize = fmt.pitch * caps.min_line_count;
+	if (!device_is_ready(display_dev)) {
+		LOG_ERR("%s: display device not ready.", display_dev->name);
+		return;
 	}
-    // bsize = 40 * 1024; // 40KB is usually enough for 320x240 JPEG, increase if needed
+
+	err = display_setup(display_dev, fmt.pixelformat);
+	if (err) {
+		LOG_ERR("Unable to set up display");
+		return;
+	}
 
     LOG_INF("Camera format: width=%d height=%d pitch=%d pixelformat=0x%x",
         fmt.width, fmt.height, fmt.pitch, fmt.pixelformat);
 
     /* Alloc video buffers and enqueue for capture */
+    bsize = fmt.pitch * fmt.height;
 	for (i = 0; i < ARRAY_SIZE(buffers); i++) {
 		/*
 		* For some hardwares, such as the PxP used on i.MX RT1170 to do image rotation,
@@ -264,33 +259,27 @@ void camera_thread(void) {
 
     while (1) {
         if (video_dequeue(video_dev, &vbuf, K_FOREVER) == 0) {
+            // Display frame on the display device
+            video_display_frame(display_dev, vbuf, fmt);
+
             // Only update buffer if network is done with it
             if (k_sem_take(&sem_frame_taken, K_NO_WAIT) == 0) {
                 if (vbuf->bytesused != FRAME_BUF_SIZE) {
                     LOG_ERR("Frame size mismatch: %zu", vbuf->bytesused);
                 }
-                // video_display_frame(display_dev, vbuf, fmt);
-                memset(frame_buf, 0, FRAME_BUF_SIZE); 
+                // LOG_DBG("Addr: %p, Size: %zu, Bytesused: %zu", (void*)vbuf->buffer, vbuf->size, vbuf->bytesused);
                 memcpy(frame_buf, vbuf->buffer, FRAME_BUF_SIZE);
                 k_sem_give(&sem_frame_ready); // Signal to network thread
             }
         }
         video_enqueue(video_dev, vbuf);
-        // err = video_dequeue(video_dev, &vbuf, K_FOREVER);
-		// if (err) {
-		// 	LOG_ERR("Unable to dequeue video buf");
-		// 	return 0;
-		// }
-        // video_display_frame(display_dev, vbuf, fmt);
-        // err = video_enqueue(video_dev, vbuf);
-		// if (err) {
-		// 	LOG_ERR("Unable to requeue video buf");
-		// 	return 0;
-		// }
     }
 }
 
 void network_thread(void) {
+    int ret = 0;
+    struct net_if_addr *addr_test;
+
     // Connect to Wi-Fi
     wifi_connect();
     while (!wifi_connected) {
@@ -300,11 +289,27 @@ void network_thread(void) {
     struct net_if *iface = net_if_get_default();
     struct in_addr addr, netmask, gw;
 
-    net_addr_pton(AF_INET, "192.168.1.50", &addr);
-    net_addr_pton(AF_INET, "255.255.255.0", &netmask);
-    net_addr_pton(AF_INET, "192.168.1.1", &gw);
+    ret = net_addr_pton(AF_INET, "192.168.1.50", &addr);
+    if (ret < 0) {
+        LOG_ERR("Failed to convert IP address");
+        return;
+    }
+    ret = net_addr_pton(AF_INET, "255.255.255.0", &netmask);
+    if (ret < 0) {
+        LOG_ERR("Failed to convert netmask address");
+        return;
+    }
+    ret = net_addr_pton(AF_INET, "192.168.1.1", &gw);
+    if (ret < 0) {
+        LOG_ERR("Failed to convert gateway address");
+        return;
+    }
 
-    net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0);
+    addr_test = net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0);
+    if (addr_test == NULL) {
+        LOG_ERR("Failed to add IP address");
+        return;
+    } 
     net_if_ipv4_set_netmask(iface, &netmask);
     net_if_ipv4_set_gw(iface, &gw);
 
@@ -361,9 +366,11 @@ void network_thread(void) {
 
     while (1) {
         // LOG_DBG("Waiting for new frame...");
-        k_sem_take(&sem_frame_ready, K_FOREVER); // Wait for new frame
+        k_sem_take(&sem_frame_ready, K_FOREVER); 
         // LOG_DBG("Sending frame to client...");
+        
         int err = send_frame_with_header(client_sock, frame_buf, FRAME_BUF_SIZE);
+
         k_sem_give(&sem_frame_taken); // Allow camera to update buffer again
         if (err < 0) {
             LOG_ERR("Failed to send frame to client");
