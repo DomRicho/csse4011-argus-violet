@@ -44,11 +44,11 @@ class VideoClientGUI:
         threading.Thread(target=self.network_thread, daemon=True).start()
         self.master.after(10, self.display_loop)
 
-    def rgb565_to_rgb888(self, frame):
+    def bgr565_to_rgb888(self, frame):
         # frame: 2D np.array of dtype uint16, shape (HEIGHT, WIDTH)
-        r = ((frame & 0xF800) >> 11).astype(np.uint8)
+        b = ((frame & 0xF800) >> 11).astype(np.uint8)
         g = ((frame & 0x07E0) >> 5).astype(np.uint8)
-        b = (frame & 0x001F).astype(np.uint8)
+        r = (frame & 0x001F).astype(np.uint8)
         # Scale to 8 bits
         r = (r << 3) | (r >> 2)
         g = (g << 2) | (g >> 4)
@@ -59,7 +59,9 @@ class VideoClientGUI:
     def network_thread(self):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                print("Connecting to ESP32...")
                 s.connect((ESP32_IP, PORT))
+                print("Connected to ESP32")
                 self.sock = s
                 while self.running:
                     # Read magic header
@@ -98,13 +100,14 @@ class VideoClientGUI:
         try:
             data = self.frame_queue.get_nowait()
             frame = np.frombuffer(data, dtype='<u2').reshape((HEIGHT, WIDTH))
+            frame = frame.byteswap()
             if not self.printed_first_reshape:
                 self.printed_first_reshape = True
                 print("After reshape, shape:", frame.shape)
                 flat = frame.flatten()
                 print("After reshape, first 8 uint16:", ' '.join(f"{v:04X}" for v in flat[:8]))
                 print("After reshape, last 8 uint16:", ' '.join(f"{v:04X}" for v in flat[-8:]))
-            rgb = self.rgb565_to_rgb888(frame)
+            rgb = self.bgr565_to_rgb888(frame)
             if not self.printed_first_rgb:
                 self.printed_first_rgb = True
                 print("After RGB conversion, shape:", rgb.shape)
