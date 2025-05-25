@@ -12,27 +12,89 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/pwm.h>
+#include <zephyr/logging/log.h>
+
+void network_thread(void);
+int servo_thread(void);
+
+#define SERVO_STACK 2048
+#define SERVO_PRIORITY 5
+#define NETWORK_STACK 2048
+#define NETWORK_PRIORITY 5
+
+#define STEP PWM_USEC(100)
+
+K_FIFO_DEFINE(servo_cmd_q);
+
+LOG_MODULE_REGISTER(servo_node, LOG_LEVEL_DBG);
 
 static const struct pwm_dt_spec tilt_servo = PWM_DT_SPEC_GET(DT_NODELABEL(tilt_servo));
 static const struct pwm_dt_spec pan_servo = PWM_DT_SPEC_GET(DT_NODELABEL(pan_servo));
 static const uint32_t min_pulse = DT_PROP(DT_NODELABEL(pan_servo), min_pulse);
 static const uint32_t max_pulse = DT_PROP(DT_NODELABEL(pan_servo), max_pulse);
 
-#define STEP PWM_USEC(100)
-
 enum direction {
 	DOWN,
 	UP,
+    LEFT,
+    RIGHT
 };
 
-int main(void)
+struct servo_cmd_t {
+    void *res;
+    enum direction dir;
+    int mag; 
+};
+
+K_THREAD_DEFINE(servo_tid, SERVO_STACK, servo_thread, NULL, NULL, NULL, SERVO_PRIORITY, 0, 0);
+K_THREAD_DEFINE(network_tid, NETWORK_STACK, network_thread, NULL, NULL, NULL, NETWORK_PRIORITY, 0, 0);
+
+void network_thread(void)
 {
-	uint32_t pulse_width = min_pulse;
-	enum direction dir = UP;
-	int ret;
+    int dir_change = 0;
+    int count = 0;
+    while(1) {
+        struct servo_cmd_t *cmd = k_malloc(sizeof(struct servo_cmd_t));
+        if (cmd == NULL) {
+            LOG_ERR("CMD NULL P");
+            continue;
+        }
+        cmd->mag = 1;
+        switch (dir_change) {
+            case 0:
+                cmd->dir = UP;
+                break;
+            case 1:
+                cmd->dir = RIGHT;
+                break;
+            case 2:
+                cmd->dir = DOWN;
+                break;
+            case 3:
+                cmd->dir = LEFT;
+                break;
+            default:
+                dir_change = 0;
+                break;
+        }
+        count++;
+        if (count >= 25) {
+            dir_change++;
+            count = 0;
+        }
+        k_fifo_put(&servo_cmd_q, cmd);
+        k_msleep(100);
+    }
+}
 
-	printk("Servomotor control\n");
-
+int servo_thread(void)
+{
+    int ret = 0; 
+	/*uint32_t pan_pw = (min_pulse + max_pulse) / 2;*/
+	/*uint32_t tilt_pw = (min_pulse + max_pulse) / 2;*/
+	uint32_t pan_pw = min_pulse;
+	uint32_t tilt_pw = min_pulse;
+    struct servo_cmd_t *cmd; 
 	if (!pwm_is_ready_dt(&pan_servo)) {
 		printk("Error: PWM device %s is not ready\n", pan_servo.dev->name);
 		return 0;
@@ -41,38 +103,62 @@ int main(void)
 		printk("Error: PWM device %s is not ready\n", tilt_servo.dev->name);
 		return 0;
 	}
-
-	while (1) {
-		/*ret = pwm_set_pulse_dt(&servo, pulse_width);*/
-        /*printk("%s :: chl %d, T=%u, PW=%u\n", pan_servo.dev->name, pan_servo.channel, pan_servo.period, pulse_width);*/
-        ret = pwm_set_pulse_dt(&pan_servo, pulse_width);
-        ret = pwm_set_pulse_dt(&tilt_servo, pulse_width);
-		if (ret < 0) {
-			printk("Error %d: failed to set pulse width\n", ret);
-			return 0;
-		}
-        /*printk("%s :: chl %d, T=%u, PW=%u\n", tilt_servo.dev->name, tilt_servo.channel, tilt_servo.period, pulse_width);*/
-
-		if (dir == DOWN) {
-			if (pulse_width <= min_pulse) {
-				dir = UP;
-				pulse_width = min_pulse;
-			} else {
-				pulse_width -= STEP;
-			}
-		} else {
-			pulse_width += STEP;
-
-			if (pulse_width >= max_pulse) {
-				dir = DOWN;
-				pulse_width = max_pulse;
-			}
-		}
-        printk("Pulse Width: %d\n", pulse_width);
-
-		/*k_sleep(K_SECONDS(1));*/
-        k_msleep(100);
-	}
-	return 0;
+    ret = pwm_set_pulse_dt(&pan_servo, pan_pw);
+    if (ret < 0) {
+        printk("Error %d: failed to set pulse width\n", ret);
+        return 0;
+    }
+    ret = pwm_set_pulse_dt(&tilt_servo, tilt_pw);
+    if (ret < 0) {
+        printk("Error %d: failed to set pulse width\n", ret);
+        return 0;
+    }
+    while(1) {
+        cmd = k_fifo_get(&servo_cmd_q, K_FOREVER);
+        if (cmd == NULL) {
+            LOG_ERR("NULL cmd");
+            continue;
+        }
+        switch (cmd->dir) {
+            case UP:
+                if (!(tilt_pw >= max_pulse)) {
+                    tilt_pw += cmd->mag * STEP; 
+                    ret = pwm_set_pulse_dt(&tilt_servo, tilt_pw);
+                    if (ret < 0) {
+                        printk("Error %d: failed to set pulse width\n", ret);
+                    }
+                }
+                break;
+            case RIGHT:
+                if (!(pan_pw >= max_pulse)) {
+                    pan_pw += cmd->mag * STEP; 
+                    ret = pwm_set_pulse_dt(&pan_servo, pan_pw);
+                    if (ret < 0) {
+                        printk("Error %d: failed to set pulse width\n", ret);
+                    }
+                }
+                break;
+            case LEFT:
+                if (!(pan_pw <= min_pulse)) {
+                    pan_pw -= cmd->mag * STEP; 
+                    ret = pwm_set_pulse_dt(&pan_servo, pan_pw);
+                    if (ret < 0) {
+                        printk("Error %d: failed to set pulse width\n", ret);
+                    }
+                }
+                break;
+            case DOWN:
+                if (!(tilt_pw <= min_pulse)) {
+                    tilt_pw -= cmd->mag * STEP; 
+                    ret = pwm_set_pulse_dt(&tilt_servo, tilt_pw);
+                    if (ret < 0) {
+                        printk("Error %d: failed to set pulse width\n", ret);
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+        k_free(cmd);
+    }
 }
-
