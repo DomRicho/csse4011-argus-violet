@@ -1,8 +1,9 @@
 #ifndef MY_NETWORK_H
 #define MY_NETWORK_H
 
-#define SERVER_PORT
-#define WIFI_SSID "Pixel_8040"
-#define WIFI_PASS "test123@"
+// defines a WIFI_SSID and WIFI_PASS
+#include "secrets.h"
+
+#define SERVER_PORT 5000
 
 #endif
