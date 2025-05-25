@@ -41,23 +41,17 @@ int main(void)
 		printk("Error: PWM device %s is not ready\n", tilt_servo.dev->name);
 		return 0;
 	}
-    ret = pwm_set_cycles(pan_servo.dev, pan_servo.channel, pan_servo.period, PWM_MSEC(10), pan_servo.flags);
-    ret = pwm_set_cycles(tilt_servo.dev, tilt_servo.channel, tilt_servo.period, PWM_MSEC(10), tilt_servo.flags);
 
 	while (1) {
 		/*ret = pwm_set_pulse_dt(&servo, pulse_width);*/
-        printk("%s :: chl %d, T=%u, PW=%u\n", pan_servo.dev->name, pan_servo.channel, pan_servo.period, pulse_width);
-        ret = pwm_set_cycles(pan_servo.dev, pan_servo.channel, pan_servo.period, pulse_width, pan_servo.flags);
+        /*printk("%s :: chl %d, T=%u, PW=%u\n", pan_servo.dev->name, pan_servo.channel, pan_servo.period, pulse_width);*/
+        ret = pwm_set_pulse_dt(&pan_servo, pulse_width);
+        ret = pwm_set_pulse_dt(&tilt_servo, pulse_width);
 		if (ret < 0) {
 			printk("Error %d: failed to set pulse width\n", ret);
 			return 0;
 		}
-        printk("%s :: chl %d, T=%u, PW=%u\n", tilt_servo.dev->name, tilt_servo.channel, tilt_servo.period, pulse_width);
-        ret = pwm_set_cycles(tilt_servo.dev, tilt_servo.channel, tilt_servo.period, pulse_width, tilt_servo.flags);
-		if (ret < 0) {
-			printk("Error %d: failed to set pulse width\n", ret);
-			return 0;
-		}
+        /*printk("%s :: chl %d, T=%u, PW=%u\n", tilt_servo.dev->name, tilt_servo.channel, tilt_servo.period, pulse_width);*/
 
 		if (dir == DOWN) {
 			if (pulse_width <= min_pulse) {
@@ -77,7 +71,7 @@ int main(void)
         printk("Pulse Width: %d\n", pulse_width);
 
 		/*k_sleep(K_SECONDS(1));*/
-        k_msleep(1000);
+        k_msleep(100);
 	}
 	return 0;
 }
