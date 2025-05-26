@@ -14,8 +14,11 @@
 
 #include <zephyr/logging/log.h>
 
+#include <esp_clk.h>
+
 #include "cam_node/cam_node.h"
 #include "common/my_network.h" // For wifi credentials
+#include "zephyr/net/wifi.h"
 
 #define FRAME_HEIGHT 240
 #define FRAME_WIDTH 240
@@ -23,12 +26,12 @@
 #define FRAME_BUF_SIZE (FRAME_WIDTH * FRAME_HEIGHT * 2)
 
 #define LOG_LEVEL LOG_LEVEL_DBG
-LOG_MODULE_REGISTER(cam_node);
+LOG_MODULE_REGISTER(cam_node, LOG_LEVEL);
 
 #define CAMERA_STACK_SIZE 4096
 #define NETWORK_STACK_SIZE 4096 * 3
 #define CAMERA_PRIORITY 3
-#define NETWORK_PRIORITY 6
+#define NETWORK_PRIORITY 6 
 K_THREAD_DEFINE(camera_tid, CAMERA_STACK_SIZE, camera_thread, NULL, NULL, NULL, CAMERA_PRIORITY, 0, 0);
 K_THREAD_DEFINE(network_tid, NETWORK_STACK_SIZE, network_thread, NULL, NULL, NULL, NETWORK_PRIORITY, 0, 0);
 
@@ -38,6 +41,9 @@ K_SEM_DEFINE(sem_frame_taken, 1, 1); // Network gives, camera takes
 
 static struct net_mgmt_event_callback wifi_cb;
 static bool wifi_connected = false;
+
+uint8_t frame_seg[528];
+int chunk = 0;
 
 // Store the frame buffer in external RAM
 __attribute__((section(".ext_ram.bss")))
@@ -50,6 +56,8 @@ static ssize_t sendall(int sock, const void *buf, size_t len)
     while (len) {
         ssize_t out_len = zsock_send(sock, buf, len, 0);
         if (out_len < 0) {
+            LOG_ERR("Error %zd %d: %p", out_len, errno, buf);
+            k_msleep(100);
             return out_len;
         }
         buf = (const char *)buf + out_len;
@@ -62,14 +70,39 @@ static ssize_t send_frame_with_header(int sock, const void *buf, size_t len)
 {
     // Send magic header
     const char header[4] = {'F', 'R', 'A', 'M'};
-    if (sendall(sock, header, 4) < 0) return -1;
+    if (sendall(sock, header, 4) < 0) {
+        LOG_ERR("Error sending FRAM");
+        return -2;
+    }
 
     // Send frame length (little-endian uint32)
     uint32_t frame_len = (uint32_t)len;
-    if (sendall(sock, &frame_len, 4) < 0) return -1;
+    if (sendall(sock, &frame_len, 4) < 0) {
+        LOG_ERR("Error sending FRAM");
+        return -3;
+    }
+
+    // fragment video frame into 225 segments (115200/512) with 16 ID header 
+    uint8_t header_f[17];
+    int count = 0;
+    while (count < 225) {
+        snprintf(header_f, 17, "F%012d%03d", chunk, count);
+        memcpy(frame_seg, header_f, 16);
+        memcpy(frame_seg + 16, buf, 512);
+        buf = (const char *)buf + 512;
+        if (sendall(sock, frame_seg, 528) < 0) {
+            LOG_ERR("Error %d: Error sending frame %d", errno, count);
+            return -4;
+        }
+        count++;
+        k_usleep(2000);
+    }
+    LOG_INF("Frame %d sent", chunk);
+    chunk++;
 
     // Send frame data
-    return sendall(sock, buf, len);
+    /*return sendall(sock, buf, len);*/
+    return 0;
 }
 
 static inline int display_setup(const struct device *const display_dev, const uint32_t pixfmt)
@@ -157,6 +190,7 @@ static void wifi_connect(void)
         .ssid_length = strlen(WIFI_SSID),
         .psk = WIFI_PASS,
         .psk_length = strlen(WIFI_PASS),
+        .band = WIFI_FREQ_BAND_2_4_GHZ,
         .security = WIFI_SECURITY_TYPE_PSK,
         .channel = WIFI_CHANNEL_ANY,
         .timeout = SYS_FOREVER_MS,
@@ -180,6 +214,9 @@ void camera_thread(void) {
 	size_t bsize;
 	int i = 0;
     int err;
+    /* is indeed running at 240 MHz */
+    /*int cpu_freq = esp_clk_cpu_freq() / 1000000;*/
+    /*printk("%d Mhz\n", cpu_freq);*/
 
     // Initialize video device
     const struct device *const video_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
@@ -277,107 +314,96 @@ void camera_thread(void) {
 }
 
 void network_thread(void) {
-    int ret = 0;
-    struct net_if_addr *addr_test;
+    /*int ret = 0;*/
+    /*struct net_if_addr *addr_test;*/
 
     // Connect to Wi-Fi
     wifi_connect();
     while (!wifi_connected) {
         k_sleep(K_SECONDS(1));
     }
-
     struct net_if *iface = net_if_get_default();
+
     struct in_addr addr, netmask, gw;
 
-    ret = net_addr_pton(AF_INET, "192.168.1.50", &addr);
-    if (ret < 0) {
-        LOG_ERR("Failed to convert IP address");
-        return;
-    }
-    ret = net_addr_pton(AF_INET, "255.255.255.0", &netmask);
-    if (ret < 0) {
-        LOG_ERR("Failed to convert netmask address");
-        return;
-    }
-    ret = net_addr_pton(AF_INET, "192.168.1.1", &gw);
-    if (ret < 0) {
-        LOG_ERR("Failed to convert gateway address");
-        return;
-    }
+    net_addr_pton(AF_INET, ESP32_IP, &addr);
+    net_addr_pton(AF_INET, "255.255.255.0", &netmask);
+    net_addr_pton(AF_INET, GW_IP, &gw);  // Gateway, probably your PC/router
 
-    addr_test = net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0);
-    if (addr_test == NULL) {
-        LOG_ERR("Failed to add IP address");
-        return;
-    } 
-    net_if_ipv4_set_netmask(iface, &netmask);
+    net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0);
+    net_if_ipv4_set_netmask_by_addr(iface, &addr, &netmask);
     net_if_ipv4_set_gw(iface, &gw);
 
     while (!net_if_is_up(iface)) {
         k_sleep(K_MSEC(100));
     }
 
-    // Open TCP socket
-    int sock = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    // Set up destination address (Python server)
+    struct sockaddr_in dest_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(SERVER_PORT),
+    };
+    zsock_inet_pton(AF_INET, PC_IP, &dest_addr.sin_addr);
+
+    int sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
         LOG_ERR("Failed to create socket");
         return;
     }
 
-    // Create socket
-    int listen_sock = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (listen_sock < 0) {
-        LOG_ERR("Failed to create listening socket");
-        return;
-    }
-
-    // Set socket options
-    struct sockaddr_in bind_addr = {
+    struct sockaddr_in sock_addr = {
         .sin_family = AF_INET,
         .sin_port = htons(SERVER_PORT),
         .sin_addr.s_addr = INADDR_ANY
     };
 
-    // Bind the socket to the address and port
-    if (zsock_bind(listen_sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
+    if (zsock_bind(sock, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) < 0) {
         LOG_ERR("Bind failed");
-        zsock_close(listen_sock);
         return;
     }
 
-    // Set the socket to listen for incoming connections
-    if (zsock_listen(listen_sock, 1) < 0) {
-        LOG_ERR("Listen failed");
-        zsock_close(listen_sock);
+    if (zsock_connect(sock, (const struct sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) {
+        LOG_ERR("Connect failed");
+        zsock_close(sock);
         return;
     }
-    LOG_INF("Server listening on port %d", SERVER_PORT);
 
-    // Wait to accept connection from client
-    struct sockaddr_in client_addr;
-    socklen_t client_addr_len = sizeof(client_addr);
-    int client_sock = zsock_accept(listen_sock, (struct sockaddr *)&client_addr, &client_addr_len);
-    if (client_sock < 0) {
-        LOG_ERR("Accept failed");
-        zsock_close(listen_sock);
-        return;
+    int connected = 0;
+    char buf[32];
+
+    while (!connected) {
+        zsock_send(sock, "CONN?", sizeof("CONN?"), 0);
+
+        int r = zsock_recv(sock, buf, sizeof(buf) - 1, ZSOCK_MSG_DONTWAIT);
+        printk("%d %32s\n", r, buf);
+        if (r > 0) {
+            buf[r] = '\0';
+            LOG_INF("Received: %s", buf);
+            if (strncmp(buf, "OK", 2) == 0) {
+                connected = 1;
+            }
+        }
+
+        k_msleep(1000);
     }
+
     LOG_INF("Client connected!");
-
     while (1) {
         // LOG_DBG("Waiting for new frame...");
         k_sem_take(&sem_frame_ready, K_FOREVER); 
         // LOG_DBG("Sending frame to client...");
         
-        int err = send_frame_with_header(client_sock, frame_buf, FRAME_BUF_SIZE);
+        int err = send_frame_with_header(sock, frame_buf, FRAME_BUF_SIZE);
+
 
         k_sem_give(&sem_frame_taken); // Allow camera to update buffer again
         if (err < 0) {
-            LOG_ERR("Failed to send frame to client");
+            LOG_ERR("Error %d: Failed to send frame to client", err);
             break;
         }
     }
-    zsock_close(client_sock);
-    zsock_close(listen_sock);
+    /*zsock_close(client_sock);*/
+    zsock_close(sock);
+    while(1) k_msleep(2000);
     return;
 }

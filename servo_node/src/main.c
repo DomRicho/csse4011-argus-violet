@@ -113,6 +113,7 @@ int servo_thread(void)
         printk("Error %d: failed to set pulse width\n", ret);
         return 0;
     }
+    k_msleep(2500);
     while(1) {
         cmd = k_fifo_get(&servo_cmd_q, K_FOREVER);
         if (cmd == NULL) {

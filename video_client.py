@@ -5,7 +5,7 @@ from PIL import Image, ImageTk
 import numpy as np
 import queue
 
-ESP32_IP = '192.168.1.50'
+ESP32_IP = '10.78.174.50'
 PORT = 5000
 WIDTH = 240
 HEIGHT = 240
@@ -58,11 +58,15 @@ class VideoClientGUI:
 
     def network_thread(self):
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 print("Connecting to ESP32...")
-                s.connect((ESP32_IP, PORT))
+                s.bind(("", PORT))
                 print("Connected to ESP32")
                 self.sock = s
+                status, addr = s.recvfrom(32)
+                print(addr, status.decode())
+                s.sendto(b"OK", (ESP32_IP, PORT))
+
                 while self.running:
                     # Read magic header
                     magic = recv_exact(s, 4)
@@ -77,18 +81,38 @@ class VideoClientGUI:
                         print(f"Unexpected frame size: {frame_len}")
                         continue
 
-                    # Read frame data
-                    data = recv_exact(s, frame_len)
-                    if not self.printed_first_frame:
-                        self.printed_first_frame = True
-                        print("Client first 16 bytes:", ' '.join(f"{b:02X}" for b in data[:16]))
-                        print("Client last 16 bytes:", ' '.join(f"{b:02X}" for b in data[-16:]))
+                    count = 0
+                    frame = bytearray()
+                    try: 
+                        while (count < 225):
+                            data = recv_exact(s, 528)
+                            # print(f"{count:03d}", ":", data[:16].decode("utf-8"), '|', ' '.join(f"{b:02X}" for b in data[16:32]), "...")
+                            frame.extend(data[16:])
+                            count += 1
+                    except:
+                        print("Frame error");
+                        continue
+
                     if self.frame_queue.full():
                         try:
                             self.frame_queue.get_nowait()
                         except queue.Empty:
                             pass
-                    self.frame_queue.put_nowait(data)
+                    print("Frame");
+                    self.frame_queue.put_nowait(frame)
+
+                    # # Read frame data
+                    # data = recv_exact(s, frame_len)
+                    # if not self.printed_first_frame:
+                    #     self.printed_first_frame = True
+                    #     print("Client first 16 bytes:", ' '.join(f"{b:02X}" for b in data[:16]))
+                    #     print("Client last 16 bytes:", ' '.join(f"{b:02X}" for b in data[-16:]))
+                    # if self.frame_queue.full():
+                    #     try:
+                    #         self.frame_queue.get_nowait()
+                    #     except queue.Empty:
+                    #         pass
+                    # self.frame_queue.put_nowait(data)
         except Exception as e:
             print("Connection Error:", e)
         finally:
