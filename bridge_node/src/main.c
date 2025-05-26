@@ -6,6 +6,8 @@
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/shell/shell.h>
 
 #include <zephyr/logging/log.h>
 
@@ -22,6 +24,21 @@ LOG_MODULE_REGISTER(bridge_node, LOG_LEVEL);
 
 static struct net_mgmt_event_callback wifi_cb;
 static bool wifi_connected = false;
+static bool ip_done = false;
+
+K_FIFO_DEFINE(servo_cmd_fifo);
+
+enum direction {
+    UP,
+    DOWN,
+    LEFT,
+    RIGHT,
+};
+
+struct servo_cmd_t {
+    void *fifo_res;
+    char cmd[8]; 
+};
 
 static void wifi_connect(void);
 
@@ -86,85 +103,6 @@ static void wifi_connect(void)
     }
 }
 
-void network_thread(void) {
-    /*int ret = 0;*/
-    /*struct net_if_addr *addr_test;*/
-
-    // Connect to Wi-Fi
-    wifi_connect();
-    while (!wifi_connected) {
-        k_sleep(K_SECONDS(1));
-    }
-    struct net_if *iface = net_if_get_default();
-
-    struct in_addr addr, netmask, gw;
-
-    net_addr_pton(AF_INET, ESP32_IP, &addr);
-    net_addr_pton(AF_INET, "255.255.255.0", &netmask);
-    net_addr_pton(AF_INET, GW_IP, &gw);  // Gateway, probably your PC/router
-
-    net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0);
-    net_if_ipv4_set_netmask_by_addr(iface, &addr, &netmask);
-    net_if_ipv4_set_gw(iface, &gw);
-
-    while (!net_if_is_up(iface)) {
-        k_sleep(K_MSEC(100));
-    }
-
-    // Set up destination address (Python server)
-    struct sockaddr_in dest_addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(SERVER_PORT),
-    };
-    zsock_inet_pton(AF_INET, PC_IP, &dest_addr.sin_addr);
-
-    int sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0) {
-        LOG_ERR("Failed to create socket");
-        return;
-    }
-
-    struct sockaddr_in sock_addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(SERVER_PORT),
-        .sin_addr.s_addr = INADDR_ANY
-    };
-
-    if (zsock_bind(sock, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) < 0) {
-        LOG_ERR("Bind failed");
-        return;
-    }
-
-    if (zsock_connect(sock, (const struct sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) {
-        LOG_ERR("Connect failed");
-        zsock_close(sock);
-        return;
-    }
-
-    int connected = 0;
-    char buf[32];
-
-    while (!connected) {
-        zsock_send(sock, "CONN?", sizeof("CONN?"), 0);
-
-        int r = zsock_recv(sock, buf, sizeof(buf) - 1, ZSOCK_MSG_DONTWAIT);
-        printk("%d %32s\n", r, buf);
-        if (r > 0) {
-            buf[r] = '\0';
-            LOG_INF("Received: %s", buf);
-            if (strncmp(buf, "OK", 2) == 0) {
-                connected = 1;
-            }
-        }
-
-        k_msleep(1000);
-    }
-
-    while(1) k_msleep(2000);
-    return;
-}
-
-
 void cam_client(void) 
 {
     wifi_connect();
@@ -175,7 +113,7 @@ void cam_client(void)
 
     struct in_addr addr, netmask, gw;
 
-    net_addr_pton(AF_INET, ESP32_IP, &addr);
+    net_addr_pton(AF_INET, BRIDGE_IP, &addr);
     net_addr_pton(AF_INET, "255.255.255.0", &netmask);
     net_addr_pton(AF_INET, GW_IP, &gw);  // Gateway, probably your PC/router
 
@@ -186,13 +124,7 @@ void cam_client(void)
     while (!net_if_is_up(iface)) {
         k_sleep(K_MSEC(100));
     }
-
-    // Set up destination address (Python server)
-    struct sockaddr_in dest_addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(SERVER_PORT),
-    };
-    zsock_inet_pton(AF_INET, PC_IP, &dest_addr.sin_addr);
+    ip_done = true;
 
     int sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
@@ -202,38 +134,29 @@ void cam_client(void)
 
     struct sockaddr_in sock_addr = {
         .sin_family = AF_INET,
-        .sin_port = htons(SERVER_PORT),
+        .sin_port = htons(CAM_SERVER_PORT),
         .sin_addr.s_addr = INADDR_ANY
     };
-
     if (zsock_bind(sock, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) < 0) {
         LOG_ERR("Bind failed");
         return;
     }
 
+    // Set up destination address (Python server)
+    struct sockaddr_in dest_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(CAM_SERVER_PORT),
+    };
+    zsock_inet_pton(AF_INET, CAM_IP, &dest_addr.sin_addr);
     if (zsock_connect(sock, (const struct sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) {
         LOG_ERR("Connect failed");
         zsock_close(sock);
         return;
     }
 
-    int connected = 0;
-    char buf[32];
-
-    while (!connected) {
-        zsock_send(sock, "CONN?", sizeof("CONN?"), 0);
-
-        int r = zsock_recv(sock, buf, sizeof(buf) - 1, ZSOCK_MSG_DONTWAIT);
-        printk("%d %32s\n", r, buf);
-        if (r > 0) {
-            buf[r] = '\0';
-            LOG_INF("Received: %s", buf);
-            if (strncmp(buf, "OK", 2) == 0) {
-                connected = 1;
-            }
-        }
-
-        k_msleep(1000);
+    while (1) {
+        zsock_send(sock, "Hello world!", strlen("Hello world!"), 0); 
+        k_msleep(1000); 
     }
 }
 K_THREAD_DEFINE(cam_client_tid, CAM_STACKSIZE, cam_client, 
@@ -241,12 +164,9 @@ K_THREAD_DEFINE(cam_client_tid, CAM_STACKSIZE, cam_client,
 
 void servo_client(void) 
 {
+    while (ip_done == false) k_msleep(100);
+    LOG_INF("servo client init");
     // Set up destination address (Python server)
-    struct sockaddr_in dest_addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(SERVER_PORT),
-    };
-    zsock_inet_pton(AF_INET, PC_IP, &dest_addr.sin_addr);
 
     int sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
@@ -256,39 +176,83 @@ void servo_client(void)
 
     struct sockaddr_in sock_addr = {
         .sin_family = AF_INET,
-        .sin_port = htons(SERVER_PORT),
+        .sin_port = htons(SERVO_SERVER_PORT),
         .sin_addr.s_addr = INADDR_ANY
     };
-
     if (zsock_bind(sock, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) < 0) {
         LOG_ERR("Bind failed");
         return;
     }
 
+    struct sockaddr_in dest_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(SERVO_SERVER_PORT),
+    };
+    zsock_inet_pton(AF_INET, SERVO_IP, &dest_addr.sin_addr);
     if (zsock_connect(sock, (const struct sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) {
         LOG_ERR("Connect failed");
         zsock_close(sock);
         return;
     }
 
-    int connected = 0;
-    char buf[32];
-
-    while (!connected) {
-        zsock_send(sock, "CONN?", sizeof("CONN?"), 0);
-
-        int r = zsock_recv(sock, buf, sizeof(buf) - 1, ZSOCK_MSG_DONTWAIT);
-        printk("%d %32s\n", r, buf);
-        if (r > 0) {
-            buf[r] = '\0';
-            LOG_INF("Received: %s", buf);
-            if (strncmp(buf, "OK", 2) == 0) {
-                connected = 1;
-            }
+    struct servo_cmd_t *servo_cmd; 
+    int ret = 0;
+    while (true) {
+        servo_cmd = k_fifo_get(&servo_cmd_fifo, K_FOREVER);
+        LOG_INF("%s", servo_cmd->cmd);
+        ret = zsock_send(sock, servo_cmd->cmd, strlen(servo_cmd->cmd), 0); 
+        if (ret < 0) {
+            LOG_ERR("Error %d: :(", errno);
         }
-
-        k_msleep(1000);
+        k_free(servo_cmd);
     }
+    zsock_close(sock);
 }
 K_THREAD_DEFINE(servo_client_tid, SERVO_STACKSIZE, servo_client, 
         NULL, NULL, NULL, SERVO_PRIORITY, 0, 0);
+
+// SHELL COMMANDS
+//
+static int servo_move(const struct shell *shell, size_t argc, char **argv)
+{
+    if (argc != 3) {
+        shell_print(shell, "Usage: move <direction_deg> <magnitude>");
+        return -EINVAL;
+    }
+
+    char* direction = argv[1];
+    int magnitude = atoi(argv[2]);
+    struct servo_cmd_t *servo_cmd = k_malloc(sizeof(struct servo_cmd_t));
+    if (magnitude < 1 || magnitude > 3) {
+        shell_error(shell, "Magnitude must be 1 2 3");
+        return -EINVAL;
+    }
+    // Simple validation
+    if (strncmp(direction, "left", 4) == 0) {
+        snprintf(servo_cmd->cmd, 8, "left:%d", magnitude);
+    } else if (strncmp(direction, "right", 5) == 0) {
+        snprintf(servo_cmd->cmd, 8, "right:%d", magnitude);
+    } else if (strncmp(direction, "down", 4) == 0) {
+        snprintf(servo_cmd->cmd, 8, "down:%d", magnitude);
+    } else if (strncmp(direction, "up", 2) == 0) {
+        snprintf(servo_cmd->cmd, 8, "up:%d", magnitude);
+    } else {
+        shell_error(shell, "wrong direction: up down left right");
+        return -EINVAL;
+    }
+
+    k_fifo_put(&servo_cmd_fifo, servo_cmd);
+
+    shell_print(shell, "Received direction: %s, magnitude: %d", direction, magnitude);
+
+    return 0;
+}
+
+// Subcommand set
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_servo,
+    SHELL_CMD(move, NULL, "Move with <left | right | up | down> < 1 2 3 >", servo_move),
+    SHELL_SUBCMD_SET_END
+);
+
+// Root command
+SHELL_CMD_REGISTER(servo, &sub_servo, "servo commands", NULL);
