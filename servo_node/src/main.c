@@ -131,54 +131,9 @@ static void wifi_connect(void)
 }
 void network_thread(void)
 {
-    wifi_connect();
-    while (!wifi_connected) {
-        k_sleep(K_SECONDS(1));
-    }
-    struct net_if *iface = net_if_get_default();
-
-    struct in_addr addr, netmask, gw;
-
-    net_addr_pton(AF_INET, SERVO_IP, &addr);
-    net_addr_pton(AF_INET, "255.255.255.0", &netmask);
-    net_addr_pton(AF_INET, GW_IP, &gw);  // Gateway, probably your PC/router
-
-    net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0);
-    net_if_ipv4_set_netmask_by_addr(iface, &addr, &netmask);
-    net_if_ipv4_set_gw(iface, &gw);
-
-    while (!net_if_is_up(iface)) {
-        k_sleep(K_MSEC(100));
-    }
-
-    int sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0) {
-        LOG_ERR("Failed to create socket");
-        return;
-    }
-
-    struct sockaddr_in sock_addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(SERVO_SERVER_PORT),
-        .sin_addr.s_addr = INADDR_ANY
-    };
-    if (zsock_bind(sock, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) < 0) {
-        LOG_ERR("Bind failed");
-        return;
-    }
-
-    // Set up destination address (Python server)
-    struct sockaddr_in dest_addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(SERVO_SERVER_PORT),
-    };
-    zsock_inet_pton(AF_INET, BRIDGE_IP, &dest_addr.sin_addr);
-    if (zsock_connect(sock, (const struct sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) {
-        LOG_ERR("Connect failed");
-        zsock_close(sock);
-        return;
-    }
-
+    init_wifi();
+    init_ip_net(SERVO_IP);
+    int sock = start_udp(SERVO_SERVER_PORT, BRIDGE_IP);
     char buf[16];  // Make it a bit larger than needed
     int size = 0;
     while (1) {
