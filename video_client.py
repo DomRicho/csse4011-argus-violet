@@ -4,6 +4,7 @@ import tkinter as tk
 from PIL import Image, ImageTk
 import numpy as np
 import queue
+import serial  # <-- NEW
 
 ESP32_IP = '10.78.174.50'
 PORT = 5000
@@ -11,8 +12,10 @@ WIDTH = 240
 HEIGHT = 240
 BYTES_PER_FRAME = WIDTH * HEIGHT * 2
 
+SERIAL_PORT = '/dev/ttyUSB0'  # <-- Change this to your actual port, e.g., '/dev/ttyUSB0'
+BAUD_RATE = 921600
+
 def recv_exact(sock, n):
-    """Receive exactly n bytes from the socket."""
     data = b''
     while len(data) < n:
         packet = sock.recv(n - len(data))
@@ -25,17 +28,63 @@ class VideoClientGUI:
     def __init__(self, master):
         self.master = master
         self.master.title("ESP32 Video Client")
-        self.master.geometry(f"{WIDTH+20}x{HEIGHT+60}")
-        self.connect_btn = tk.Button(master, text="Connect", command=self.connect)
+
+        # Initialize serial connection
+        try:
+            self.serial_conn = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+            print(f"Serial connected on {SERIAL_PORT}")
+        except serial.SerialException as e:
+            self.serial_conn = None
+            print("Serial connection failed:", e)
+
+        # Top frame
+        top_frame = tk.Frame(master)
+        top_frame.pack(pady=5)
+
+        self.connect_btn = tk.Button(top_frame, text="Connect", command=self.connect)
         self.connect_btn.pack()
-        self.canvas = tk.Label(master, width=WIDTH, height=HEIGHT)
+
+        self.canvas = tk.Label(top_frame)
         self.canvas.pack()
+
+        # Button frame
+        self.button_frame = tk.Frame(master)
+        self.button_frame.pack(pady=10)
+
+        self.up_btn = tk.Button(self.button_frame, text="Up", width=10, command=lambda: self.send_command("UP"))
+        self.up_btn.grid(row=0, column=1)
+
+        self.left_btn = tk.Button(self.button_frame, text="Left", width=10, command=lambda: self.send_command("LEFT"))
+        self.left_btn.grid(row=1, column=0)
+
+        self.down_btn = tk.Button(self.button_frame, text="Down", width=10, command=lambda: self.send_command("DOWN"))
+        self.down_btn.grid(row=1, column=1)
+
+        self.right_btn = tk.Button(self.button_frame, text="Right", width=10, command=lambda: self.send_command("RIGHT"))
+        self.right_btn.grid(row=1, column=2)
+
         self.running = False
         self.sock = None
-        self.frame_queue = queue.Queue(maxsize=1)  # Only keep the latest frame
-        self.printed_first_frame = False
-        self.printed_first_reshape = False
-        self.printed_first_rgb = False
+        self.frame_queue = queue.Queue(maxsize=1)
+
+    def send_command(self, direction):
+        print(f"Sending command: {direction}")
+        # Send via Serial
+        if self.serial_conn and self.serial_conn.is_open:
+            try:
+                self.serial_conn.write((direction + '\n').encode())
+                if (direction == "UP"): 
+                    self.serial_conn.write("servo move up 1\n".encode())
+                elif (direction == "DOWN"): 
+                    self.serial_conn.write("servo move down 1\n".encode())
+                elif (direction == "RIGHT"): 
+                    self.serial_conn.write("servo move right 1\n".encode())
+                elif (direction == "LEFT"): 
+                    self.serial_conn.write("servo move left 1\n".encode())
+                else:
+                    print("invalid direction")
+            except Exception as e:
+                print("Serial send failed:", e)
 
     def connect(self):
         if self.running:
@@ -45,11 +94,9 @@ class VideoClientGUI:
         self.master.after(10, self.display_loop)
 
     def bgr565_to_rgb888(self, frame):
-        # frame: 2D np.array of dtype uint16, shape (HEIGHT, WIDTH)
         b = ((frame & 0xF800) >> 11).astype(np.uint8)
         g = ((frame & 0x07E0) >> 5).astype(np.uint8)
         r = (frame & 0x001F).astype(np.uint8)
-        # Scale to 8 bits
         r = (r << 3) | (r >> 2)
         g = (g << 2) | (g >> 4)
         b = (b << 3) | (b >> 2)
@@ -59,62 +106,31 @@ class VideoClientGUI:
     def network_thread(self):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                print("Connecting to ESP32...")
+                print("Connecting...")
                 s.bind(("", PORT))
-                print("Connected to ESP32")
                 self.sock = s
                 status, addr = s.recvfrom(32)
                 print(addr, status.decode())
                 s.sendto(b"OK", (ESP32_IP, PORT))
 
                 while self.running:
-                    # Read magic header
                     magic = recv_exact(s, 4)
                     if magic != b'FRAM':
-                        print("Frame sync lost, searching for next header...")
-                        continue  # Or implement resync logic
-
-                    # Read frame length
-                    frame_len_bytes = recv_exact(s, 4)
-                    frame_len = int.from_bytes(frame_len_bytes, 'little')
+                        continue
+                    frame_len = int.from_bytes(recv_exact(s, 4), 'little')
                     if frame_len != BYTES_PER_FRAME:
-                        print(f"Unexpected frame size: {frame_len}")
                         continue
 
-                    count = 0
                     frame = bytearray()
-                    try: 
-                        while (count < 225):
-                            data = recv_exact(s, 528)
-                            # print(f"{count:03d}", ":", data[:16].decode("utf-8"), '|', ' '.join(f"{b:02X}" for b in data[16:32]), "...")
-                            frame.extend(data[16:])
-                            count += 1
-                    except:
-                        print("Frame error");
-                        continue
+                    for _ in range(225):
+                        data = recv_exact(s, 528)
+                        frame.extend(data[16:])
 
                     if self.frame_queue.full():
-                        try:
-                            self.frame_queue.get_nowait()
-                        except queue.Empty:
-                            pass
-                    print("Frame");
+                        self.frame_queue.get_nowait()
                     self.frame_queue.put_nowait(frame)
-
-                    # # Read frame data
-                    # data = recv_exact(s, frame_len)
-                    # if not self.printed_first_frame:
-                    #     self.printed_first_frame = True
-                    #     print("Client first 16 bytes:", ' '.join(f"{b:02X}" for b in data[:16]))
-                    #     print("Client last 16 bytes:", ' '.join(f"{b:02X}" for b in data[-16:]))
-                    # if self.frame_queue.full():
-                    #     try:
-                    #         self.frame_queue.get_nowait()
-                    #     except queue.Empty:
-                    #         pass
-                    # self.frame_queue.put_nowait(data)
         except Exception as e:
-            print("Connection Error:", e)
+            print("Network error:", e)
         finally:
             self.running = False
 
@@ -125,18 +141,7 @@ class VideoClientGUI:
             data = self.frame_queue.get_nowait()
             frame = np.frombuffer(data, dtype='<u2').reshape((HEIGHT, WIDTH))
             frame = frame.byteswap()
-            if not self.printed_first_reshape:
-                self.printed_first_reshape = True
-                print("After reshape, shape:", frame.shape)
-                flat = frame.flatten()
-                print("After reshape, first 8 uint16:", ' '.join(f"{v:04X}" for v in flat[:8]))
-                print("After reshape, last 8 uint16:", ' '.join(f"{v:04X}" for v in flat[-8:]))
             rgb = self.bgr565_to_rgb888(frame)
-            if not self.printed_first_rgb:
-                self.printed_first_rgb = True
-                print("After RGB conversion, shape:", rgb.shape)
-                print("After RGB conversion, first 2 pixels:", rgb[0,0], rgb[0,1])
-                print("After RGB conversion, last 2 pixels:", rgb[-1,-2], rgb[-1,-1])
             img = Image.fromarray(rgb, 'RGB')
             imgtk = ImageTk.PhotoImage(image=img)
             self.canvas.imgtk = imgtk
@@ -147,10 +152,12 @@ class VideoClientGUI:
 
     def on_close(self):
         self.running = False
+        if self.serial_conn and self.serial_conn.is_open:
+            self.serial_conn.close()
         self.master.destroy()
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = VideoClientGUI(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
-    root.mainloop() 
+    root.mainloop()
