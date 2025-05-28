@@ -105,39 +105,37 @@ class VideoClientGUI:
 
     def network_thread(self):
         try:
-            count = 0;
-            now = time.time()
-            while True:
-                frame = self.serial_conn.read_until(expected=b'F', size=528);
-                count += 528
-                if (count >= 115200):
-                    end = time.time()
-                    print(end - now)
-                    now = time.time()
-                    count = 0
+            frame = bytearray(115200)
+            old_id = -1  # start with an invalid frame_id
+            while self.running:
+                data = self.serial_conn.read_until(expected=b'F',size=528)  # or read_until if there's a reliable marker
+                print(data);
 
+                if len(data) != 528:
+                    continue  # ignore incomplete chunks
 
-            # with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            #     s.bind(("", PORT))
-            #     self.sock = s
-            #
-            #     while self.running:
-            #         magic = recv_exact(s, 4)
-            #         if magic != b'FRAM':
-            #             continue
-            #         frame_len = int.from_bytes(recv_exact(s, 4), 'little')
-            #         if frame_len != BYTES_PER_FRAME:
-            #             continue
-            #
-            #         frame = bytearray()
-            #         for _ in range(225):
-            #             data = recv_exact(s, 528)
-            #             frame.extend(data[16:])
-            #
-            #         if self.frame_queue.full():
-            #             self.frame_queue.get_nowait()
-            #         self.frame_queue.put_nowait(frame)
+                try:
+                    frame_info = data[:15].decode("utf-8")  # Assuming header is 16 bytes
+                    frame_chunk = int(frame_info[-3:])
+                    frame_id = int(frame_info[0:12])
+                except Exception as e:
+                    print(f"Parse error: {e}")
+                    continue
+
+                if frame_id != old_id:
+                    # New frame: send last one to display
+                    if old_id != -1 and not self.frame_queue.full():
+                        self.frame_queue.put_nowait(frame)
+                    frame = bytearray(115200)
+                    old_id = frame_id
+
+                idx = frame_chunk * 512
+                if idx + 512 <= len(frame):
+                    frame[idx:idx + 512] = data[16:]
+                else:
+                    print("Warning: Chunk index out of range")
         except Exception as e:
+            print(data);
             print("Network error:", e)
         finally:
             self.running = False
