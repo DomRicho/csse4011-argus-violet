@@ -1,4 +1,5 @@
 import socket
+import time
 import threading
 import tkinter as tk
 from PIL import Image, ImageTk
@@ -6,8 +7,6 @@ import numpy as np
 import queue
 import serial  # <-- NEW
 
-ESP32_IP = '10.78.174.50'
-PORT = 5000
 WIDTH = 240
 HEIGHT = 240
 BYTES_PER_FRAME = WIDTH * HEIGHT * 2
@@ -65,22 +64,23 @@ class VideoClientGUI:
 
         self.running = False
         self.sock = None
-        self.frame_queue = queue.Queue(maxsize=1)
+        self.frame_queue = queue.Queue(maxsize=2)
+        self.frame_a = bytearray([0xAA]*115200)
+        self.frame_b = bytearray([0x00]*115200)
 
     def send_command(self, direction):
         print(f"Sending command: {direction}")
         # Send via Serial
         if self.serial_conn and self.serial_conn.is_open:
             try:
-                self.serial_conn.write((direction + '\n').encode())
                 if (direction == "UP"): 
-                    self.serial_conn.write("servo move up 1\n".encode())
+                    self.serial_conn.write(b"U1")
                 elif (direction == "DOWN"): 
-                    self.serial_conn.write("servo move down 1\n".encode())
+                    self.serial_conn.write(b"D1")
                 elif (direction == "RIGHT"): 
-                    self.serial_conn.write("servo move right 1\n".encode())
+                    self.serial_conn.write(b"R1")
                 elif (direction == "LEFT"): 
-                    self.serial_conn.write("servo move left 1\n".encode())
+                    self.serial_conn.write(b"L1")
                 else:
                     print("invalid direction")
             except Exception as e:
@@ -105,30 +105,38 @@ class VideoClientGUI:
 
     def network_thread(self):
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                print("Connecting...")
-                s.bind(("", PORT))
-                self.sock = s
-                status, addr = s.recvfrom(32)
-                print(addr, status.decode())
-                s.sendto(b"OK", (ESP32_IP, PORT))
+            count = 0;
+            now = time.time()
+            while True:
+                frame = self.serial_conn.read_until(expected=b'F', size=528);
+                count += 528
+                if (count >= 115200):
+                    end = time.time()
+                    print(end - now)
+                    now = time.time()
+                    count = 0
 
-                while self.running:
-                    magic = recv_exact(s, 4)
-                    if magic != b'FRAM':
-                        continue
-                    frame_len = int.from_bytes(recv_exact(s, 4), 'little')
-                    if frame_len != BYTES_PER_FRAME:
-                        continue
 
-                    frame = bytearray()
-                    for _ in range(225):
-                        data = recv_exact(s, 528)
-                        frame.extend(data[16:])
-
-                    if self.frame_queue.full():
-                        self.frame_queue.get_nowait()
-                    self.frame_queue.put_nowait(frame)
+            # with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            #     s.bind(("", PORT))
+            #     self.sock = s
+            #
+            #     while self.running:
+            #         magic = recv_exact(s, 4)
+            #         if magic != b'FRAM':
+            #             continue
+            #         frame_len = int.from_bytes(recv_exact(s, 4), 'little')
+            #         if frame_len != BYTES_PER_FRAME:
+            #             continue
+            #
+            #         frame = bytearray()
+            #         for _ in range(225):
+            #             data = recv_exact(s, 528)
+            #             frame.extend(data[16:])
+            #
+            #         if self.frame_queue.full():
+            #             self.frame_queue.get_nowait()
+            #         self.frame_queue.put_nowait(frame)
         except Exception as e:
             print("Network error:", e)
         finally:
