@@ -8,6 +8,7 @@
 #include <zephyr/logging/log.h>
 
 #include "common/my_network.h" // For wifi credentials
+#include "zephyr/net/socket.h"
 #include "zephyr/net/wifi.h"
 
 #define CAM_STACKSIZE 2048
@@ -79,6 +80,7 @@ void cam_client(void)
 {
     init_wifi();
     init_ip_net(BRIDGE_IP);
+    k_msleep(100);
     /*uart_callback_set(uart_dev, uart_callback, NULL);*/
     if (!device_is_ready(uart_dev)) {
         return;
@@ -104,18 +106,9 @@ void cam_client(void)
     uint8_t colours[3] = { 0xAA, 0xFF, 0x00};
 
     while (1) {
-        while (chunk < 225) {
-            snprintf(header_f, 17, "F%012d%03d", id, chunk);
-            memcpy(frame_seg, header_f, 16);
-            memcpy(frame_seg + 16, frame_a, 512);
-            // Enable TX IRQ to send it
-            uart_irq_tx_enable(uart_dev);
-            k_sem_take(&tx_done, K_FOREVER);
-            chunk++;
-        }
-        memset(frame_a, colours[id % 3], sizeof(frame_a));
-        id++;
-        chunk = 0;
+        recv_exact(sock, frame_seg, 528, 0);
+        uart_irq_tx_enable(uart_dev);
+        k_sem_take(&tx_done, K_FOREVER);
     }
 }
 K_THREAD_DEFINE(cam_client_tid, CAM_STACKSIZE, cam_client, 
@@ -162,8 +155,8 @@ void servo_client(void)
     }
     zsock_close(sock);
 }
-K_THREAD_DEFINE(servo_client_tid, SERVO_STACKSIZE, servo_client, 
-        NULL, NULL, NULL, SERVO_PRIORITY, 0, 0);
+/*K_THREAD_DEFINE(servo_client_tid, SERVO_STACKSIZE, servo_client, */
+/*        NULL, NULL, NULL, SERVO_PRIORITY, 0, 0);*/
 
 /*--------------------------------------------------------------------------*/
 /*----------------------------- SHELL COMMANDS -----------------------------*/
