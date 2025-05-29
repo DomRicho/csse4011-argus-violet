@@ -101,6 +101,7 @@ void cam_client(void)
     uint8_t header_f[17];
     chunk = 0;
     id = 0;
+    uint8_t colours[3] = { 0xAA, 0xFF, 0x00};
 
     while (1) {
         while (chunk < 225) {
@@ -112,6 +113,7 @@ void cam_client(void)
             k_sem_take(&tx_done, K_FOREVER);
             chunk++;
         }
+        memset(frame_a, colours[id % 3], sizeof(frame_a));
         id++;
         chunk = 0;
     }

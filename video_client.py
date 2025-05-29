@@ -65,8 +65,6 @@ class VideoClientGUI:
         self.running = False
         self.sock = None
         self.frame_queue = queue.Queue(maxsize=2)
-        self.frame_a = bytearray([0xAA]*115200)
-        self.frame_b = bytearray([0x00]*115200)
 
     def send_command(self, direction):
         print(f"Sending command: {direction}")
@@ -109,7 +107,6 @@ class VideoClientGUI:
             old_id = -1  # start with an invalid frame_id
             while self.running:
                 data = self.serial_conn.read_until(expected=b'F',size=528)  # or read_until if there's a reliable marker
-                print(data);
 
                 if len(data) != 528:
                     continue  # ignore incomplete chunks
@@ -125,6 +122,7 @@ class VideoClientGUI:
                 if frame_id != old_id:
                     # New frame: send last one to display
                     if old_id != -1 and not self.frame_queue.full():
+                        print(frame[:16])
                         self.frame_queue.put_nowait(frame)
                     frame = bytearray(115200)
                     old_id = frame_id
@@ -135,7 +133,6 @@ class VideoClientGUI:
                 else:
                     print("Warning: Chunk index out of range")
         except Exception as e:
-            print(data);
             print("Network error:", e)
         finally:
             self.running = False
