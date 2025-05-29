@@ -57,19 +57,19 @@ static ssize_t sendall(int sock, const void *buf, size_t len) {
 
 static ssize_t send_frame_with_header(int sock, const void *buf, size_t len)
 {
-    // Send magic header
-    const char header[4] = {'F', 'R', 'A', 'M'};
-    if (sendall(sock, header, 4) < 0) {
-        LOG_ERR("Error sending FRAM");
-        return -2;
-    }
+    // // Send magic header
+    // const char header[4] = {'F', 'R', 'A', 'M'};
+    // if (sendall(sock, header, 4) < 0) {
+    //     LOG_ERR("Error sending FRAM");
+    //     return -2;
+    // }
 
-    // Send frame length (little-endian uint32)
-    uint32_t frame_len = (uint32_t)len;
-    if (sendall(sock, &frame_len, 4) < 0) {
-        LOG_ERR("Error sending FRAM");
-        return -3;
-    }
+    // // Send frame length (little-endian uint32)
+    // uint32_t frame_len = (uint32_t)len;
+    // if (sendall(sock, &frame_len, 4) < 0) {
+    //     LOG_ERR("Error sending FRAM");
+    //     return -3;
+    // }
 
     // fragment video frame into 225 segments (115200/512) with 16 ID header 
     uint8_t header_f[17];
@@ -263,7 +263,7 @@ void network_thread(void) {
     // Connect to Wi-Fi
     init_wifi();
     init_ip_net(CAM_IP);
-    int sock = start_udp(CAM_SERVER_PORT, BRIDGE_IP);
+    int sock = start_tcp(CAM_SERVER_PORT, BRIDGE_IP);
     if (sock < 0) {
         LOG_ERR("Sock error");
         zsock_close(sock);

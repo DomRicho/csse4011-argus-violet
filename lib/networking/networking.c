@@ -89,6 +89,70 @@ void init_wifi()
     }
 }
 
+int start_tcp(int port, const char *dest_ip) {
+    int sock = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) {
+        LOG_ERR("Failed to create socket");
+        return -1;
+    }
+
+    // Set socket options
+    struct sockaddr_in bind_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(CAM_SERVER_PORT),
+        .sin_addr.s_addr = INADDR_ANY
+    };
+
+    // Bind the socket to the address and port
+    if (zsock_bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
+        LOG_ERR("Bind failed");
+        zsock_close(sock);
+        return 0;
+    }
+
+    // Set the socket to listen for incoming connections
+    if (zsock_listen(sock, 1) < 0) {
+        LOG_ERR("Listen failed");
+        zsock_close(sock);
+        return 0;
+    }
+
+    // Wait to accept connection from client
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
+    int client_sock = zsock_accept(sock, (struct sockaddr *)&client_addr, &client_addr_len);
+    if (client_sock < 0) {
+        LOG_ERR("Accept failed");
+        zsock_close(sock);
+        return 0;
+    }
+}
+
+int connect_tcp_client(const char *server_ip, int server_port)
+{
+    int sock = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) {
+        LOG_ERR("Failed to create TCP socket");
+        return -1;
+    }
+
+    struct sockaddr_in server_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(server_port),
+    };
+    zsock_inet_pton(AF_INET, server_ip, &server_addr.sin_addr);
+
+    if (zsock_connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        LOG_ERR("TCP connect failed");
+        zsock_close(sock);
+        return -1;
+    }
+
+    LOG_INF("Connected to TCP server %s:%d", server_ip, server_port);
+    return sock; // Return the connected socket for use
+}
+
+
 int start_udp(int port, const char *dest_ip)
 {
     int sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
