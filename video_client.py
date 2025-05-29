@@ -5,13 +5,19 @@ import tkinter as tk
 from PIL import Image, ImageTk
 import numpy as np
 import queue
-import serial  # <-- NEW
+import serial 
+import mediapipe as mp
+import cv2
+import csv
+import tensorflow as tf
+from tensorflow import keras
+ # <-- NEW
 
 WIDTH = 240
 HEIGHT = 240
 BYTES_PER_FRAME = WIDTH * HEIGHT * 2
 
-SERIAL_PORT = '/dev/ttyUSB0'  # <-- Change this to your actual port, e.g., '/dev/ttyUSB0'
+SERIAL_PORT = 'COM17'  # <-- Change this to your actual port, e.g., '/dev/ttyUSB0'
 BAUD_RATE = 921600
 
 def recv_exact(sock, n):
@@ -65,7 +71,8 @@ class VideoClientGUI:
         self.running = False
         self.sock = None
         self.frame_queue = queue.Queue(maxsize=2)
-
+        self.model_queue = queue.Queue(maxsize=2)
+        
     def send_command(self, direction):
         print(f"Sending command: {direction}")
         # Send via Serial
@@ -89,6 +96,7 @@ class VideoClientGUI:
             return
         self.running = True
         threading.Thread(target=self.network_thread, daemon=True).start()
+        threading.Thread(target=self.model_thread, daemon=True).start()
         self.master.after(10, self.display_loop)
 
     def bgr565_to_rgb888(self, frame):
@@ -98,16 +106,17 @@ class VideoClientGUI:
         r = (r << 3) | (r >> 2)
         g = (g << 2) | (g >> 4)
         b = (b << 3) | (b >> 2)
-        rgb = np.dstack((r, g, b))
+        rgb = np.dstack((b, g, r))
         return rgb
 
     def network_thread(self):
         try:
             frame = bytearray(115200)
             old_id = -1  # start with an invalid frame_id
+            print("network_thread running")
             while self.running:
+                
                 data = self.serial_conn.read_until(expected=b'F0000', size=528)  # or read_until if there's a reliable marker
-
                 if len(data) != 528:
                     continue  # ignore incomplete chunks
 
@@ -145,6 +154,9 @@ class VideoClientGUI:
             frame = np.frombuffer(data, dtype='<u2').reshape((HEIGHT, WIDTH))
             # frame = frame.byteswap()
             rgb = self.bgr565_to_rgb888(frame)
+
+            self.model_queue.put(rgb)
+
             img = Image.fromarray(rgb, 'RGB')
             imgtk = ImageTk.PhotoImage(image=img)
             self.canvas.imgtk = imgtk
@@ -152,12 +164,381 @@ class VideoClientGUI:
         except queue.Empty:
             pass
         self.master.after(1, self.display_loop)
-
+    
     def on_close(self):
+            self.running = False
+            if self.serial_conn and self.serial_conn.is_open:
+                self.serial_conn.close()
+            self.master.destroy()
+
+    def model_thread(self):
+        # Initialize MediaPipe Hands and Drawing utilities
+        mp_drawing = mp.solutions.drawing_utils
+        mp_hands = mp.solutions.hands
+
+        #capture = cv2.VideoCapture(0)
+
+        recording = False
+        gesture_number = 0
+
+        gestures = ['Open hand', 'Closed hand']
+
+        model = self.load_model()
+
+        #last_check = time.time()
+
+        with mp_hands.Hands(min_detection_confidence=0.8, min_tracking_confidence=0.5, static_image_mode='store_true') as hands:
+            while self.running:
+                #print("Model thread running...")
+                # Check for key presses
+                key = cv2.waitKey(1) & 0xFF
+                gesture_number = -1  # Reset gesture number if no valid key is pressed
+                if key == ord('q'):
+                    break
+                elif key == ord('r'):
+                    # Start recording data
+                    recording = not recording
+                    if recording:
+                        print("Recording data...")
+                    else:
+                        print("Stopped recording data.")
+                elif ord('0') <= key <= ord('1'):
+                    gesture_number = key - ord('0')
+                    print(f"Gesture number set to: {gesture_number}")
+
+                # Capture frame-by-frame
+                #ret, frame = capture.read()
+                #GET FRAME
+                try:
+                    frame = self.model_queue.get_nowait()
+                except queue.Empty:
+                    continue
+
+                #frame = cv2.flip(frame, 1)
+
+                # Resize the frame to 240x240
+                #frame = cv2.resize(frame, (240, 240))
+
+                #image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+                #image = cv2.normalize(image, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+                # Process the image and detect hands
+                detected_image = hands.process(frame)
+
+                image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+
+                # Draw hand landmarks and connections if hands are detected
+                if detected_image.multi_hand_landmarks:
+
+                    absolute_landmarks = self.normalize_landmarks(image, detected_image.multi_hand_landmarks)
+
+                    # Predict gesture 
+                    predicted_gesture_num = self.predict_gesture(model, absolute_landmarks)
+                    predicted_gesture = gestures[predicted_gesture_num]
+                    print(f"Predicted Gesture: {predicted_gesture}")
+
+                    # if closed hand, get positon and direction of centre frame
+                    pixel_landmarks = self.get_landmarks_pixels(image, detected_image.multi_hand_landmarks)
+                    hand_position = self.get_hand_position(pixel_landmarks)
+
+                    cv2.circle(image, hand_position, 5, (0, 255, 0), -1)
+                    
+                    centre = self.get_centre(image)
+                    cv2.circle(image, centre, 5, (255, 0, 0), -1)
+
+                    cv2.line(image, centre, hand_position, (0, 255, 0), 2)
+                    
+                    distance_from_centre = self.get_distance_from_centre(hand_position, image)
+
+                    print(f"Distance from center: {distance_from_centre}")
+                    
+                    # if not self.pause:
+                    if (predicted_gesture_num == 0):
+                        direction = self.get_directions(image, hand_position)
+                        print(f"Direction to move: {direction}")
+                        servo_cmd = self.get_servo_cmd(hand_position)
+
+                        if servo_cmd[0] is not None or servo_cmd[1] is not None:
+                            #for i in range(servo_cmd_nums[0]):
+                            self.send_command(servo_cmd[0])
+                            time.sleep(0.2)
+                            #for i in range(servo_cmd_nums[1]):
+                            self.send_command(servo_cmd[1])
+                            self.pause = 1
+                    else:
+                        direction = None
+                    # else:
+                    #     current_time = time.time()
+
+                    #     if current_time - last_check >= 10:
+                    #         last_check = current_time
+                    #         self.pause = 0
+                        
+                    # Display the predicted gesture on the image
+                    cv2.putText(image, f"Gesture: {predicted_gesture}", 
+                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    if direction is not None:
+                        cv2.putText(image, f"Direction: {direction}",
+                                    (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+                    for hand_lms in detected_image.multi_hand_landmarks:
+                        mp_drawing.draw_landmarks(image, hand_lms,
+                                                    mp_hands.HAND_CONNECTIONS,
+                                                    landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(
+                                                        color=(255, 0, 255), thickness=2, circle_radius=1),
+                                                    connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(
+                                                        color=(20, 180, 90), thickness=1, circle_radius=1)
+                                                    )
+                    # Record data if recording is enabled
+                    self.record_data(recording, gesture_number, absolute_landmarks)
+                cv2.imshow('Webcam', image)   
+        #capture.release()
+        cv2.destroyAllWindows()
         self.running = False
-        if self.serial_conn and self.serial_conn.is_open:
-            self.serial_conn.close()
-        self.master.destroy()
+
+    def get_landmarks_pixels(self, image, landmarks):
+        """
+        Extracts the pixel coordinates of the landmarks from the detected hand landmarks.
+        """
+        height, width, _ = image.shape
+        pixel_landmarks = []
+        for hand_landmarks in landmarks:
+            for landmark in hand_landmarks.landmark:
+                pixel_x = int(landmark.x * width)
+                pixel_y = int(landmark.y * height)
+                pixel_landmarks.append((pixel_x, pixel_y))
+        return pixel_landmarks
+
+    def normalize_landmarks(self, image, landmarks):
+        """
+        Get relative landmarks
+        """
+        landmarks_pos_list = []
+        base_x, base_y = 0, 0
+        if not landmarks:
+            return []
+
+        landmarks_pos_list = self.get_landmarks_pixels(image, landmarks)
+        relative_landmarks = []
+
+        for landmark in landmarks_pos_list:
+            if landmark == landmarks_pos_list[0]:
+                base_x = landmark[0]
+                base_y = landmark[1]
+            
+            relative_x = abs(landmark[0] - base_x)
+            relative_y = abs(landmark[1] - base_y)
+
+            relative_landmarks.append(relative_x)
+            relative_landmarks.append(relative_y)
+
+        # Normalize the landmarks to a range of 0 to 1
+        max_val = max(relative_landmarks)
+
+        normalized_landmarks = []
+
+        for landmark in relative_landmarks:
+            normalized_landmark = landmark / max_val
+            normalized_landmarks.append(normalized_landmark)
+
+        return normalized_landmarks
+
+    def record_data(self, recording, gesture_number, landmarks):
+        """
+        Record the normalized landmarks to a file.
+        """
+        csv_file = 'data/landmarks.csv'
+        if recording and gesture_number != -1:
+            with open(csv_file, mode='a', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow([gesture_number, *landmarks])
+        return
+
+    def load_model(self):
+        """
+        Load the pre-trained model for gesture recognition.
+        """
+        model = keras.models.load_model('pc_gesture_model/model/model.keras')
+
+        return model
+
+    def predict_gesture(self, model, landmarks):
+        """
+        Predict the gesture based on the normalized landmarks.
+        """
+        if not landmarks:
+            return None
+
+        # Reshape landmarks for model input
+        input_data = np.array([landmarks])
+        
+        # Predict gesture
+        prediction = model.predict(input_data, verbose=0)
+        predicted_gesture = np.argmax(np.squeeze(prediction))
+
+        return predicted_gesture
+        
+    def get_hand_position(self, landmarks):
+        """
+        Get the position of the hand based on the landmarks.
+        """
+        if not landmarks:
+            return None
+
+        # Calculate the center of the hand
+        x_coords = [landmark[0] for landmark in landmarks]
+        y_coords = [landmark[1] for landmark in landmarks]
+
+        center_x = int(np.mean(x_coords))
+        center_y = int(np.mean(y_coords))
+
+        return (center_x, center_y)
+
+    def get_distance_from_centre(self, hand_position, image):
+        """
+        Calculate the distance of the hand position from the center of the image.
+        """
+        height, width, _ = image.shape
+        center_x = width // 2
+        center_y = height // 2
+
+        if hand_position is None:
+            return None
+
+        distance = np.sqrt((hand_position[0] - center_x) ** 2 + (hand_position[1] - center_y) ** 2)
+        
+        return distance
+
+    def get_centre(self, image):
+        """
+        Get the center of the image.
+        """
+        height, width, _ = image.shape
+        center_x = width // 2
+        center_y = height // 2
+
+        return (center_x, center_y)
+
+    def get_directions(self, image, hand_position):
+        """
+        Get the direction the needs to be moved to get to centre of the image.
+        first moves to the centre line, then up or down
+
+        centre is defined as a 30 x 30 pixel squre in the middle of the image
+
+        """
+
+        height, width, _ = image.shape
+        center_x = width // 2
+        center_y = height // 2
+
+        hand_x, hand_y = hand_position
+
+        centre_vertical_bounds = (center_x - 15, center_x + 15)
+
+        cv2.line(image, (centre_vertical_bounds[0], 0), (centre_vertical_bounds[0], height), (255, 0, 0), 2)
+        cv2.line(image, (centre_vertical_bounds[1], 0), (centre_vertical_bounds[1], height), (255, 0, 0), 2)
+        
+
+        centre_horizontal_bounds = (center_y - 15, center_y + 15)
+        cv2.line(image, (0, centre_horizontal_bounds[0]), (width, centre_horizontal_bounds[0]), (255, 0, 0), 2)
+        cv2.line(image, (0, centre_horizontal_bounds[1]), (width, centre_horizontal_bounds[1]), (255, 0, 0), 2)
+
+        if centre_vertical_bounds[0] <= hand_x <= centre_vertical_bounds[1]:
+            if centre_horizontal_bounds[0] <= hand_y <= centre_horizontal_bounds[1]:
+                return "Centre"
+            elif hand_y < centre_horizontal_bounds[0]:
+                return "Down"
+            else:
+                return "Up"
+        else:
+            if hand_x < centre_vertical_bounds[0]:
+                return "Right"
+            else:
+                return "Left"        
+    def send_servo_cmd(self, ser, cmd):
+        """
+        Send the servo command.
+        """
+        if ser is not None:
+            try:
+                ser.write(cmd.encode())
+                print(f"Sent command: {cmd}")
+            except serial.SerialException as e:
+                print(f"Error sending command: {e}")
+        else:
+            print("Serial port is not open.")
+    
+    def get_servo_cmd(self, postion):
+        """
+        Get the servo command based on the distance from the center.
+        """
+        x,y = postion
+        x_cmd = None
+        y_cmd = None
+
+        if x <= 240:
+            x_cmd = "RIGHT"
+        elif 105 < x <= 135:
+            x_cmd = None
+        elif x >= 0:
+            x_cmd = "LEFT"
+
+        if y <= 240:
+            y_cmd = "DOWN"
+        elif 105 < y <= 135:
+            y_cmd = None
+        elif y >= 0:
+            y_cmd = "UP"
+
+
+        # if 0 <= x < 35:
+        #     x_cmd = "RIGHT"
+        #     x_cmd_num = 3
+        # elif 35 <= x < 70:
+        #     x_cmd = "RIGHT"
+        #     x_cmd_num = 2
+        # elif 70 <= x < 105:
+        #     x_cmd = "RIGHT"
+        #     x_cmd_num = 1
+        # elif 105 < x <= 135:
+        #     x_cmd = None
+        #     x_cmd_num = 0
+        # elif 135 < x <= 170:
+        #     x_cmd = "LEFT"
+        #     x_cmd_num = 1
+        # elif 170 < x <= 205:
+        #     x_cmd = "LEFT"
+        #     x_cmd_num = 2
+        # elif 205 < x <= 240:
+        #     x_cmd = "LEFT"
+        #     x_cmd_num = 3
+
+        # if 0 <= y < 35:
+        #     y_cmd = "UP"
+        #     y_cmd_num = 3
+        # elif 35 <= y < 70:
+        #     y_cmd = "UP"
+        #     y_cmd_num = 2
+        # elif 70 <= y < 105:
+        #     y_cmd = "UP"
+        #     y_cmd_num = 1
+        # elif 105 < y <= 135:
+        #     y_cmd = None
+        #     y_cmd_num = 0
+        # elif 135 < y <= 170:
+        #     y_cmd = "DOWN"
+        #     y_cmd_num = 1
+        # elif 170 < y <= 205:
+        #     y_cmd = "DOWN"
+        #     y_cmd_num = 2
+        # elif 205 < y <= 240:
+        #     y_cmd = "DOWN"
+        #     y_cmd_num = 3
+
+        return (x_cmd, y_cmd)
 
 if __name__ == "__main__":
     root = tk.Tk()
