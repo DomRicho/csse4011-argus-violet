@@ -183,7 +183,7 @@ class VideoClientGUI:
         recording = False
         gesture_number = 0
 
-        gestures = ['Open hand', 'Closed hand']
+        gestures = ['Open hand', 'Closed hand', 'Down', 'Up', 'Left', 'Right']
 
         model = self.load_model()
         pause = 0
@@ -196,6 +196,7 @@ class VideoClientGUI:
                 # Check for key presses
                 key = cv2.waitKey(1) & 0xFF
                 gesture_number = -1  # Reset gesture number if no valid key is pressed
+                predicted_gesture_num = -1
                 if key == ord('q'):
                     break
                 elif key == ord('r'):
@@ -266,10 +267,10 @@ class VideoClientGUI:
                     print(f"Distance from center: {distance_from_centre}")
                     
                     
-                    if (predicted_gesture_num == 1):
+                    if (predicted_gesture_num):
                         direction = self.get_directions(image, hand_position)
-                        print(f"Direction to move: {direction}")
-                        servo_cmd = self.get_servo_cmd(hand_position)
+                        
+                        servo_cmd = self.get_servo_cmd(hand_position, predicted_gesture_num)
 
                         if servo_cmd[0] is not None:
                             #for i in range(servo_cmd_nums[0]):
@@ -478,7 +479,7 @@ class VideoClientGUI:
         else:
             print("Serial port is not open.")
     
-    def get_servo_cmd(self, postion):
+    def get_servo_cmd(self, postion, gesture_num):
         """
         Get the servo command based on the distance from the center.
         """
@@ -486,64 +487,28 @@ class VideoClientGUI:
         x_cmd = None
         y_cmd = None
 
-        if 145 < x <= 240:
-            x_cmd = "LEFT"
-        elif 95 < x <= 145:
-            x_cmd = None
-        elif 95 >= x >= 0:
-            x_cmd = "RIGHT"
+        if gesture_num == 1:
+            if 145 < x <= 240:
+                x_cmd = "LEFT"
+            elif 95 < x <= 145:
+                x_cmd = None
+            elif 95 >= x >= 0:
+                x_cmd = "RIGHT"
 
-        if 145 < y <= 240:
+            if 145 < y <= 240:
+                y_cmd = "DOWN"
+            elif 95 < y <= 145:
+                y_cmd = None
+            elif 95 >= y >= 0:
+                y_cmd = "UP"
+        elif gesture_num == 2:
             y_cmd = "DOWN"
-        elif 95 < y <= 145:
-            y_cmd = None
-        elif 95 >= y >= 0:
+        elif gesture_num == 3:
             y_cmd = "UP"
-
-
-        # if 0 <= x < 35:
-        #     x_cmd = "RIGHT"
-        #     x_cmd_num = 3
-        # elif 35 <= x < 70:
-        #     x_cmd = "RIGHT"
-        #     x_cmd_num = 2
-        # elif 70 <= x < 105:
-        #     x_cmd = "RIGHT"
-        #     x_cmd_num = 1
-        # elif 105 < x <= 135:
-        #     x_cmd = None
-        #     x_cmd_num = 0
-        # elif 135 < x <= 170:
-        #     x_cmd = "LEFT"
-        #     x_cmd_num = 1
-        # elif 170 < x <= 205:
-        #     x_cmd = "LEFT"
-        #     x_cmd_num = 2
-        # elif 205 < x <= 240:
-        #     x_cmd = "LEFT"
-        #     x_cmd_num = 3
-
-        # if 0 <= y < 35:
-        #     y_cmd = "UP"
-        #     y_cmd_num = 3
-        # elif 35 <= y < 70:
-        #     y_cmd = "UP"
-        #     y_cmd_num = 2
-        # elif 70 <= y < 105:
-        #     y_cmd = "UP"
-        #     y_cmd_num = 1
-        # elif 105 < y <= 135:
-        #     y_cmd = None
-        #     y_cmd_num = 0
-        # elif 135 < y <= 170:
-        #     y_cmd = "DOWN"
-        #     y_cmd_num = 1
-        # elif 170 < y <= 205:
-        #     y_cmd = "DOWN"
-        #     y_cmd_num = 2
-        # elif 205 < y <= 240:
-        #     y_cmd = "DOWN"
-        #     y_cmd_num = 3
+        elif gesture_num == 4:
+            x_cmd = "LEFT"
+        elif gesture_num == 5:
+            x_cmd = "RIGHT"
 
         return (x_cmd, y_cmd)
 
