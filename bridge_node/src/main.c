@@ -86,7 +86,7 @@ void cam_client(void)
     uart_irq_callback_set(uart_dev, uart_cb);
     uart_irq_rx_enable(uart_dev);
     ip_done = true;
-    int sock = connect_tcp_client(CAM_IP, CAM_SERVER_PORT);
+    int sock = start_udp(CAM_SERVER_PORT, CAM_IP);
     if (sock < 0) {
         LOG_ERR("Error with socket");
         return;

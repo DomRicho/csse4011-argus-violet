@@ -263,7 +263,7 @@ void network_thread(void) {
     // Connect to Wi-Fi
     init_wifi();
     init_ip_net(CAM_IP);
-    int sock = start_tcp(CAM_SERVER_PORT, BRIDGE_IP);
+    int sock = start_udp(CAM_SERVER_PORT, BRIDGE_IP);
     if (sock < 0) {
         LOG_ERR("Sock error");
         zsock_close(sock);
