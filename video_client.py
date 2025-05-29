@@ -17,7 +17,7 @@ WIDTH = 240
 HEIGHT = 240
 BYTES_PER_FRAME = WIDTH * HEIGHT * 2
 
-SERIAL_PORT = 'COM17'  # <-- Change this to your actual port, e.g., '/dev/ttyUSB0'
+SERIAL_PORT = '/dev/ttyUSB0'  # <-- Change this to your actual port, e.g., '/dev/ttyUSB0'
 BAUD_RATE = 921600
 
 def recv_exact(sock, n):
