@@ -23,5 +23,6 @@ int init_ip_net(const char *my_addr);
 void init_wifi(void);
 int start_udp(int port, const char *dest_addr);
 int start_tcp(int port, const char *dest_ip);
+int connect_tcp_client(const char *server_ip, int server_port);
 
 #endif
