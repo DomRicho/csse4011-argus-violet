@@ -70,8 +70,8 @@ class VideoClientGUI:
 
         self.running = False
         self.sock = None
-        self.frame_queue = queue.Queue(maxsize=2)
-        self.model_queue = queue.Queue(maxsize=2)
+        self.frame_queue = queue.Queue(maxsize=5)
+        self.model_queue = queue.Queue(maxsize=5)
         
     def send_command(self, direction):
         print(f"Sending command: {direction}")
@@ -154,7 +154,9 @@ class VideoClientGUI:
             frame = np.frombuffer(data, dtype='<u2').reshape((HEIGHT, WIDTH))
             # frame = frame.byteswap()
             rgb = self.bgr565_to_rgb888(frame)
-
+            rgb = cv2.flip(rgb, 0)
+            rgb = cv2.flip(rgb, 1)
+        
             self.model_queue.put(rgb)
 
             img = Image.fromarray(rgb, 'RGB')
@@ -184,10 +186,11 @@ class VideoClientGUI:
         gestures = ['Open hand', 'Closed hand']
 
         model = self.load_model()
+        pause = 0
+        pause_count = 0
+        last_check = time.time()
 
-        #last_check = time.time()
-
-        with mp_hands.Hands(min_detection_confidence=0.8, min_tracking_confidence=0.5, static_image_mode='store_true') as hands:
+        with mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.8, min_tracking_confidence=0.5, static_image_mode='store_true') as hands:
             while self.running:
                 #print("Model thread running...")
                 # Check for key presses
@@ -218,7 +221,7 @@ class VideoClientGUI:
 
                 # Resize the frame to 240x240
                 #frame = cv2.resize(frame, (240, 240))
-
+                
                 #image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
                 #image = cv2.normalize(image, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -228,6 +231,14 @@ class VideoClientGUI:
 
                 image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
+                if pause:
+                    pause_count = pause_count + 1
+                    print("skipping..")
+                    if pause_count >= 2:
+                        print("ready")
+                        pause_count = 0
+                        pause = 0
+                    continue    
 
                 # Draw hand landmarks and connections if hands are detected
                 if detected_image.multi_hand_landmarks:
@@ -254,27 +265,23 @@ class VideoClientGUI:
 
                     print(f"Distance from center: {distance_from_centre}")
                     
-                    # if not self.pause:
-                    if (predicted_gesture_num == 0):
+                    
+                    if (predicted_gesture_num == 1):
                         direction = self.get_directions(image, hand_position)
                         print(f"Direction to move: {direction}")
                         servo_cmd = self.get_servo_cmd(hand_position)
 
-                        if servo_cmd[0] is not None or servo_cmd[1] is not None:
+                        if servo_cmd[0] is not None:
                             #for i in range(servo_cmd_nums[0]):
                             self.send_command(servo_cmd[0])
-                            time.sleep(0.2)
+                            # pause = 1
+                        if servo_cmd[1] is not None:
                             #for i in range(servo_cmd_nums[1]):
                             self.send_command(servo_cmd[1])
-                            self.pause = 1
+                            # pause = 1
                     else:
                         direction = None
-                    # else:
-                    #     current_time = time.time()
 
-                    #     if current_time - last_check >= 10:
-                    #         last_check = current_time
-                    #         self.pause = 0
                         
                     # Display the predicted gesture on the image
                     cv2.putText(image, f"Gesture: {predicted_gesture}", 
@@ -479,18 +486,18 @@ class VideoClientGUI:
         x_cmd = None
         y_cmd = None
 
-        if x <= 240:
-            x_cmd = "RIGHT"
-        elif 105 < x <= 135:
-            x_cmd = None
-        elif x >= 0:
+        if 145 < x <= 240:
             x_cmd = "LEFT"
+        elif 95 < x <= 145:
+            x_cmd = None
+        elif 95 >= x >= 0:
+            x_cmd = "RIGHT"
 
-        if y <= 240:
+        if 145 < y <= 240:
             y_cmd = "DOWN"
-        elif 105 < y <= 135:
+        elif 95 < y <= 145:
             y_cmd = None
-        elif y >= 0:
+        elif 95 >= y >= 0:
             y_cmd = "UP"
 
 
