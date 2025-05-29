@@ -189,9 +189,15 @@ void camera_thread(void) {
         return;
     }
 
-	struct video_control ctrl = {.id = VIDEO_CID_VFLIP, .val = 0};
+	struct video_control ctrl = {.id = VIDEO_CID_VFLIP, .val = 1};
 	if (video_set_ctrl(video_dev, &ctrl)) {
         LOG_ERR("Unable to set control");
+        return;
+    }
+
+    struct video_control ctrl1 = {.id = VIDEO_CID_HFLIP, .val = 0};
+	if (video_set_ctrl(video_dev, &ctrl1)) {
+        LOG_ERR("Unable to set control 1");
         return;
     }
 
