@@ -117,6 +117,8 @@ int start_tcp(int port, const char *dest_ip) {
         return 0;
     }
 
+    LOG_DBG("TCP server listening on %s:%d, waiting for client...", dest_ip, port);
+
     // Wait to accept connection from client
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
@@ -126,6 +128,9 @@ int start_tcp(int port, const char *dest_ip) {
         zsock_close(sock);
         return 0;
     }
+
+    LOG_INF("Client connected!");
+    return sock;
 }
 
 int connect_tcp_client(const char *server_ip, int server_port)
