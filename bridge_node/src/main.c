@@ -75,6 +75,27 @@ static void uart_cb(const struct device *dev, void *user_data)
     }
 }
 
+ssize_t recv_exact(int sock, void *buf, size_t len, int flags)
+{
+    uint8_t *ptr = (uint8_t *)buf;
+    size_t total_received = 0;
+
+    while (total_received < len) {
+        ssize_t ret = zsock_recv(sock, ptr + total_received, len - total_received, flags);
+
+        if (ret < 0) {
+            LOG_ERR("recv_exact: recv failed (%d)", errno);
+            return -1; // Error
+        } else if (ret == 0) {
+            LOG_ERR("recv_exact: connection closed");
+            return -1; // Connection closed by peer
+        }
+
+        total_received += ret;
+    }
+
+    return total_received; // Should equal `len`
+}
 
 void cam_client(void) 
 {
@@ -93,17 +114,6 @@ void cam_client(void)
         LOG_ERR("Error with socket");
         return;
     }
-
-
-    uint8_t frame_a[512];
-    memset(frame_a, 0xAA, sizeof(frame_a));
-
-    int id, chunk; 
-
-    uint8_t header_f[17];
-    chunk = 0;
-    id = 0;
-    uint8_t colours[3] = { 0xAA, 0xFF, 0x00};
 
     while (1) {
         recv_exact(sock, frame_seg, 528, 0);
@@ -155,8 +165,8 @@ void servo_client(void)
     }
     zsock_close(sock);
 }
-/*K_THREAD_DEFINE(servo_client_tid, SERVO_STACKSIZE, servo_client, */
-/*        NULL, NULL, NULL, SERVO_PRIORITY, 0, 0);*/
+K_THREAD_DEFINE(servo_client_tid, SERVO_STACKSIZE, servo_client, 
+        NULL, NULL, NULL, SERVO_PRIORITY, 0, 0);
 
 /*--------------------------------------------------------------------------*/
 /*----------------------------- SHELL COMMANDS -----------------------------*/

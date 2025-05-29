@@ -106,15 +106,15 @@ class VideoClientGUI:
             frame = bytearray(115200)
             old_id = -1  # start with an invalid frame_id
             while self.running:
-                data = self.serial_conn.read_until(expected=b'F',size=528)  # or read_until if there's a reliable marker
+                data = self.serial_conn.read_until(expected=b'F0000', size=528)  # or read_until if there's a reliable marker
 
                 if len(data) != 528:
                     continue  # ignore incomplete chunks
 
                 try:
-                    frame_info = data[:15].decode("utf-8")  # Assuming header is 16 bytes
+                    frame_info = data[:11].decode("utf-8")  # Assuming header is 16 bytes
                     frame_chunk = int(frame_info[-3:])
-                    frame_id = int(frame_info[0:12])
+                    frame_id = int(frame_info[:-3])
                 except Exception as e:
                     print(f"Parse error: {e}")
                     continue
@@ -122,14 +122,14 @@ class VideoClientGUI:
                 if frame_id != old_id:
                     # New frame: send last one to display
                     if old_id != -1 and not self.frame_queue.full():
-                        print(frame[:16])
                         self.frame_queue.put_nowait(frame)
+                        print("Frame", old_id)
                     frame = bytearray(115200)
                     old_id = frame_id
 
                 idx = frame_chunk * 512
                 if idx + 512 <= len(frame):
-                    frame[idx:idx + 512] = data[16:]
+                    frame[idx:idx + 512] = data[12:-4]
                 else:
                     print("Warning: Chunk index out of range")
         except Exception as e:
@@ -143,7 +143,7 @@ class VideoClientGUI:
         try:
             data = self.frame_queue.get_nowait()
             frame = np.frombuffer(data, dtype='<u2').reshape((HEIGHT, WIDTH))
-            frame = frame.byteswap()
+            # frame = frame.byteswap()
             rgb = self.bgr565_to_rgb888(frame)
             img = Image.fromarray(rgb, 'RGB')
             imgtk = ImageTk.PhotoImage(image=img)
