@@ -86,6 +86,8 @@ class VideoClientGUI:
                     self.serial_conn.write(b"R1")
                 elif (direction == "LEFT"): 
                     self.serial_conn.write(b"L1")
+                elif (direction == "CENTRE"):
+                    self.serial_conn.write(b"C0")
                 else:
                     print("invalid direction")
             except Exception as e:
@@ -509,6 +511,8 @@ class VideoClientGUI:
             x_cmd = "LEFT"
         elif gesture_num == 5:
             x_cmd = "RIGHT"
+        elif gesture_num == 0:
+            x_cmd = "CENTRE"
 
         return (x_cmd, y_cmd)
 
