@@ -118,8 +118,10 @@ class VideoClientGUI:
             print("network_thread running")
             while self.running:
                 
-                data = self.serial_conn.read_until(expected=b'F0000', size=528)  # or read_until if there's a reliable marker
+                data = self.serial_conn.read_until(expected=b'FRAME', size=528)  # or read_until if there's a reliable marker
                 if len(data) != 528:
+                    print("INVALID FRAME!!", len(data))
+                    print(data)
                     continue  # ignore incomplete chunks
 
                 try:
@@ -134,7 +136,6 @@ class VideoClientGUI:
                     # New frame: send last one to display
                     if old_id != -1 and not self.frame_queue.full():
                         self.frame_queue.put_nowait(frame)
-                        print("Frame", old_id)
                     frame = bytearray(115200)
                     old_id = frame_id
 
@@ -234,6 +235,7 @@ class VideoClientGUI:
 
                 image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
+                print(pause)
                 if pause:
                     pause_count = pause_count + 1
                     print("skipping..")
@@ -277,11 +279,11 @@ class VideoClientGUI:
                         if servo_cmd[0] is not None:
                             #for i in range(servo_cmd_nums[0]):
                             self.send_command(servo_cmd[0])
-                            # pause = 1
+                            pause = 1
                         if servo_cmd[1] is not None:
                             #for i in range(servo_cmd_nums[1]):
                             self.send_command(servo_cmd[1])
-                            # pause = 1
+                            pause = 1
                     else:
                         direction = None
 

@@ -75,7 +75,7 @@ static ssize_t send_frame_with_header(int sock, const void *buf, size_t len)
     uint8_t header_f[17];
     int count = 0;
     while (count < 225) {
-        snprintf(header_f, 17, "F%012d%03d", chunk, count);
+        snprintf(header_f, 17, "FRAME%08d%03d", chunk, count);
         memcpy(frame_seg, header_f, 16);
         memcpy(frame_seg + 16, buf, 512);
         buf = (const char *)buf + 512;
