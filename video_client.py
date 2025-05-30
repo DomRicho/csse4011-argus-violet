@@ -17,7 +17,7 @@ WIDTH = 240
 HEIGHT = 240
 BYTES_PER_FRAME = WIDTH * HEIGHT * 2
 
-SERIAL_PORT = 'COM17'  # <-- Change this to your actual port, e.g., '/dev/ttyUSB0'
+SERIAL_PORT = '/dev/ttyUSB0'  # <-- Change this to your actual port, e.g., '/dev/ttyUSB0'
 BAUD_RATE = 921600
 
 def recv_exact(sock, n):
@@ -87,7 +87,7 @@ class VideoClientGUI:
                 elif (direction == "LEFT"): 
                     self.serial_conn.write(b"L1")
                 elif (direction == "CENTRE"):
-                    self.serial_conn.write(b"C0")
+                    self.serial_conn.write(b"C1")
                 else:
                     print("invalid direction")
             except Exception as e:
@@ -269,7 +269,7 @@ class VideoClientGUI:
                     print(f"Distance from center: {distance_from_centre}")
                     
                     
-                    if (predicted_gesture_num):
+                    if (predicted_gesture_num != -1):
                         direction = self.get_directions(image, hand_position)
                         
                         servo_cmd = self.get_servo_cmd(hand_position, predicted_gesture_num)

@@ -55,7 +55,8 @@ enum direction {
 	DOWN,
 	UP,
     LEFT,
-    RIGHT
+    RIGHT,
+    CENTRE
 };
 
 struct servo_cmd_t {
@@ -180,6 +181,8 @@ void network_thread(void)
             cmd->dir = UP;
         } else if (strcmp(dir, "down") == 0) {
             cmd->dir = DOWN;
+        } else if (strcmp(dir, "centre") == 0) {
+            cmd->dir = CENTRE;
         } else {
             LOG_ERR("Invalid direction: %s", dir);
             k_free(cmd);
@@ -259,6 +262,12 @@ int servo_thread(void)
                         printk("Error %d: failed to set pulse width\n", ret);
                     }
                 }
+                break;
+            case CENTRE:
+                pan_pw = (min_pulse + max_pulse) / 2;
+                tilt_pw = (min_pulse + max_pulse) / 2;
+                ret = pwm_set_pulse_dt(&tilt_servo, tilt_pw);
+                ret = pwm_set_pulse_dt(&pan_servo, pan_pw);
                 break;
             default:
                 break;
