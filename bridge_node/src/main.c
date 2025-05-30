@@ -35,13 +35,13 @@ enum direction {
 
 struct servo_cmd_t {
     void *fifo_res;
-    char cmd[8]; 
+    char cmd[10]; 
 };
 
 static uint8_t frame_seg[528];
 static size_t frame_size = 528;
 static size_t data_sent = 0;
-uint8_t cmd_buf[8];
+uint8_t cmd_buf[10];
 
 static void uart_cb(const struct device *dev, void *user_data)
 {
@@ -142,16 +142,19 @@ void servo_client(void)
         int mag = servo_cmd->cmd[1] - '0';
         switch(servo_cmd->cmd[0]) {
         case 'U':
-            snprintf(servo_cmd->cmd, 8, "up:%1d", mag);
+            snprintf(servo_cmd->cmd, 10, "up:%1d", mag);
             break;
         case 'D':
-            snprintf(servo_cmd->cmd, 8, "down:%1d", mag);
+            snprintf(servo_cmd->cmd, 10, "down:%1d", mag);
             break;
         case 'L':
-            snprintf(servo_cmd->cmd, 8, "left:%1d", mag);
+            snprintf(servo_cmd->cmd, 10, "left:%1d", mag);
             break;
         case 'R':
-            snprintf(servo_cmd->cmd, 8, "right:%1d", mag);
+            snprintf(servo_cmd->cmd, 10, "right:%1d", mag);
+            break;
+        case 'C':
+            snprintf(servo_cmd->cmd, 10, "centre:0");
             break;
         default:
             k_free(servo_cmd);
